@@ -99,7 +99,7 @@ if check_password():
         except Exception as e:
             st.error(f"連線異常: {e}")
 
-    # --- TAB 2: 已出貨訂單 (新增日期、平台、物流篩選) ---
+    # --- TAB 2: 已出貨訂單 (含全方位篩選) ---
     if user_level >= 5:
         with tabs[1]:
             st.header("歷史出貨紀錄")
@@ -109,57 +109,64 @@ if check_password():
                     df_o = pd.json_normalize(res_o.data)
                     df_o.columns = ['訂單編號', '客戶', '數量', '平台', '物流', '時間', '商品名稱']
                     
-                    # 資料預處理：轉換時間格式
+                    # 資料預處理
                     df_o['時間'] = pd.to_datetime(df_o['時間'])
                     df_o['日期'] = df_o['時間'].dt.date
                     
                     # --- 篩選介面佈局 ---
-                    st.write("🔍 **篩選查詢**")
+                    st.write("🔍 **進階篩選查詢**")
+                    # 第一排：時間、平台、物流
                     c1, c2, c3 = st.columns(3)
-                    
                     with c1:
-                        # 日期區間篩選
                         today = date.today()
                         last_month = today - timedelta(days=30)
                         date_range = st.date_input("選擇日期區間", value=(last_month, today))
-                    
                     with c2:
                         p_list = ["全部"] + sorted(df_o['平台'].unique().astype(str).tolist())
                         sel_p = st.selectbox("🛒 篩選平台", p_list)
-                    
                     with c3:
                         l_list = ["全部"] + sorted(df_o['物流'].unique().astype(str).tolist())
                         sel_l = st.selectbox("🚛 篩選物流", l_list)
 
+                    # 第二排：關鍵字搜尋 (商品名稱、客戶)
+                    c4, c5 = st.columns(2)
+                    with c4:
+                        search_product = st.text_input("📦 搜尋商品名稱", placeholder="輸入關鍵字...")
+                    with c5:
+                        search_customer = st.text_input("👤 搜尋客戶姓名", placeholder="輸入客戶姓名...")
+
                     # --- 執行過濾邏輯 ---
-                    filtered_df = df_o.copy()
+                    f_df = df_o.copy()
                     
-                    # 1. 日期過濾 (判斷是否有選起始與結束)
+                    # 1. 日期過濾
                     if len(date_range) == 2:
                         start_date, end_date = date_range
-                        filtered_df = filtered_df[(filtered_df['日期'] >= start_date) & (filtered_df['日期'] <= end_date)]
-                    
+                        f_df = f_df[(f_df['日期'] >= start_date) & (f_df['日期'] <= end_date)]
                     # 2. 平台過濾
                     if sel_p != "全部":
-                        filtered_df = filtered_df[filtered_df['平台'] == sel_p]
-                    
+                        f_df = f_df[f_df['平台'] == sel_p]
                     # 3. 物流過濾
                     if sel_l != "全部":
-                        filtered_df = filtered_df[filtered_df['物流'] == sel_l]
+                        f_df = f_df[f_df['物流'] == sel_l]
+                    # 4. 商品名稱關鍵字搜尋 (不分大小寫)
+                    if search_product:
+                        f_df = f_df[f_df['商品名稱'].str.contains(search_product, case=False, na=False)]
+                    # 5. 客戶關鍵字搜尋 (不分大小寫)
+                    if search_customer:
+                        f_df = f_df[f_df['客戶'].str.contains(search_customer, case=False, na=False)]
 
                     # --- 顯示結果 ---
-                    st.write(f"📊 查詢結果：共 {len(filtered_df)} 筆訂單")
+                    st.markdown(f"共找到 **{len(f_df)}** 筆符合條件的訂單")
                     
-                    # 整理顯示欄位（隱藏中間處理用的'日期'欄位）
-                    display_df = filtered_df.drop(columns=['日期'])
-                    # 將時間轉回字串顯示
+                    # 整理顯示 (隱藏輔助用的'日期'，轉換時間格式)
+                    display_df = f_df.drop(columns=['日期'])
                     display_df['時間'] = display_df['時間'].dt.strftime('%Y-%m-%d %H:%M')
                     
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
                     
                     # 下載功能
                     csv_o = display_df.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button("📥 下載篩選後清單 (CSV)", csv_o, "filtered_orders.csv", "text/csv")
+                    st.download_button("📥 下載篩選後結果 (CSV)", csv_o, "filtered_orders.csv", "text/csv")
                 else:
                     st.info("尚無訂單紀錄。")
             except Exception as e:
@@ -169,4 +176,6 @@ if check_password():
     if user_level >= 9:
         with tabs[-1]:
             st.header("⚙️ 系統報表導出中心")
-            st.button("🚀 產生年度分析報表")
+            st.info("此處提供管理員進行全系統大數據分析匯出。")
+            st.button("🚀 導出全系統庫存總結")
+            st.button("📈 導出年度銷售統計報表")
