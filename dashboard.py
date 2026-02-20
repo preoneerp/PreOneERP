@@ -21,7 +21,6 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # 登入視覺設計
         _, center_col, _ = st.columns([1, 2, 1])
         with center_col:
             try:
@@ -42,7 +41,7 @@ def check_password():
         return False
     return True
 
-# --- 2. 核心主程式 (純觀看與輸出模式) ---
+# --- 2. 核心主程式 ---
 if check_password():
     user_level = st.session_state["user_level"]
     current_user = st.session_state["current_user"]
@@ -53,9 +52,13 @@ if check_password():
     
     supabase = init_connection()
 
-    # 側邊欄狀態
+    # --- 側邊欄：資訊與全域篩選 ---
     st.sidebar.markdown(f"### 👤 使用者：{current_user}")
     st.sidebar.markdown(f"🛡️ 權限等級：**Level {user_level}**")
+    
+    # 低庫存門檻設定
+    low_stock_threshold = st.sidebar.slider("⚠️ 安全庫存預警門檻", 0, 100, 10)
+    
     if st.sidebar.button("登出系統"):
         st.session_state.clear()
         st.rerun()
@@ -70,7 +73,7 @@ if check_password():
     
     tabs = st.tabs(tab_titles)
 
-    # --- TAB 1: 庫存概況 (純觀看) ---
+    # --- TAB 1: 庫存概況 (含低庫存提示) ---
     with tabs[0]:
         st.header("庫存數據明細")
         try:
@@ -79,15 +82,34 @@ if check_password():
                 df_p = pd.json_normalize(res_p.data)
                 df_p.columns = ['商品名稱', '庫存數量', '供應商']
                 
-                # 篩選
+                # 供應商篩選
                 v_list = ["全部"] + sorted(df_p['供應商'].unique().tolist())
                 sel_v = st.sidebar.selectbox("📦 篩選供應商", v_list)
                 if sel_v != "全部":
                     df_p = df_p[df_p['供應商'] == sel_v]
                 
-                st.dataframe(df_p, use_container_width=True, hide_index=True)
+                # --- 低庫存提示邏輯 ---
+                low_stock_items = df_p[df_p['庫存數量'] <= low_stock_threshold]
                 
-                # 即使是 Level 1 也可以下載自己看到的視圖
+                if not low_stock_items.empty:
+                    st.error(f"🚨 【預警】共有 {len(low_stock_items)} 項商品低於安全庫存 ({low_stock_threshold})！")
+                    with st.expander("查看待補貨清單"):
+                        st.table(low_stock_items)
+                else:
+                    st.success("✅ 目前所有商品庫存充足")
+
+                # 表格美化：低於門檻的儲存格顯示紅色背景
+                def highlight_low_stock(s):
+                    return ['background-color: #ffcccc' if s.name == '庫存數量' and v <= low_stock_threshold else '' for v in s]
+
+                st.subheader("完整庫存清單")
+                st.dataframe(
+                    df_p.style.apply(highlight_low_stock, axis=0), 
+                    use_container_width=True, 
+                    hide_index=True
+                )
+                
+                # 下載功能
                 csv = df_p.to_csv(index=False).encode('utf-8-sig')
                 st.download_button("📥 下載當前庫存表 (CSV)", csv, "inventory.csv", "text/csv")
             else:
@@ -95,7 +117,7 @@ if check_password():
         except Exception as e:
             st.error(f"連線異常: {e}")
 
-    # --- TAB 2: 已出貨訂單 (Level 5+ 純觀看) ---
+    # --- TAB 2: 已出貨訂單 ---
     if user_level >= 5:
         with tabs[1]:
             st.header("歷史出貨紀錄")
@@ -103,7 +125,7 @@ if check_password():
                 res_o = supabase.table("orders").select("order_number, customer_name, quantity, platform, logistics, shipped_at, products(name)").execute()
                 if res_o.data:
                     df_o = pd.json_normalize(res_o.data)
-                    df_o.columns = ['訂單編號', '客戶', '數量', '平台', '物流', '時間', '商品']
+                    df_o.columns = ['訂單編號', '客戶', '數量', '平台', '物流', '時間', '商品名稱']
                     
                     st.dataframe(df_o, use_container_width=True, hide_index=True)
                     
@@ -114,20 +136,10 @@ if check_password():
             except:
                 st.warning("訂單讀取異常。")
 
-    # --- TAB 3: 報表導出 (Level 9 專屬) ---
+    # --- TAB 3: 報表導出 (Level 9) ---
     if user_level >= 9:
         with tabs[-1]:
             st.header("⚙️ 系統報表導出中心")
             st.write("此處提供管理員進行全系統數據匯出。")
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("庫存總表")
-                st.info("包含所有供應商之完整原始數據")
-                # 這裡可以寫更複雜的 join 查詢用於導出
-                st.button("🚀 產生年度庫存分析報表")
-                
-            with c2:
-                st.subheader("物流與平台分析")
-                st.info("針對各平台出貨佔比進行彙整")
-                st.button("📈 產生銷售通路統計報表")
+            st.button("🚀 產生年度庫存分析報表 (PDF預留)")
+            st.button("📈 產生銷售通路統計報表 (CSV)")
