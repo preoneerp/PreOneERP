@@ -1,30 +1,35 @@
 import streamlit as st
 import pandas as pd
-import psycopg2
+from supabase import create_client
 
 st.set_page_config(page_title="ERP 庫存報表", layout="wide")
-st.title("📊 東京機房 - 直連報表")
+st.title("📊 企業級穩定報表 (API 模式)")
 
-def get_connection():
-    return psycopg2.connect(
-        host=st.secrets["DB_HOST"],
-        database=st.secrets["DB_NAME"],
-        user=st.secrets["DB_USER"],
-        password=st.secrets["DB_PASSWORD"],
-        port=st.secrets["DB_PORT"],
-        connect_timeout=20
-    )
+# 初始化 Supabase 客戶端
+@st.cache_resource
+def init_connection():
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
 try:
-    with st.spinner('連線中...'):
-        conn = get_connection()
-        query = "SELECT p.name AS 商品名稱, p.stock AS 庫存數量, v.name AS 供應商 FROM products p LEFT JOIN vendors v ON p.v_id = v.id ORDER BY p.stock ASC;"
-        df = pd.read_sql(query, conn)
-        conn.close()
-
-    st.success("✅ 連線成功！")
-    st.dataframe(df, use_container_width=True)
+    supabase = init_connection()
+    
+    # 直接抓取資料表內容，這走的是 HTTPS，幾乎不會失敗
+    response = supabase.table("products").select("name, stock, vendors(name)").execute()
+    
+    # 轉換成 DataFrame
+    data = response.data
+    if data:
+        df = pd.json_normalize(data)
+        # 整理欄位名稱
+        df.columns = ['商品名稱', '庫存數量', '供應商']
+        
+        st.metric("總品項數", len(df))
+        st.dataframe(df, use_container_width=True)
+        st.bar_chart(data=df, x="商品名稱", y="庫存數量")
+    else:
+        st.info("目前資料庫中尚無資料。")
 
 except Exception as e:
-    st.error("❌ 連線失敗")
-    st.info(f"錯誤訊息：{e}")
+    st.error(f"連線失敗：{e}")
