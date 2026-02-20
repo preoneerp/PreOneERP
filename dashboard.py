@@ -3,85 +3,59 @@ import pandas as pd
 from supabase import create_client
 
 # 頁面配置
-st.set_page_config(page_title="ERP 庫存管理系統", layout="wide", initial_sidebar_state="expanded")
-
-# 自定義 CSS 美化
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    </style>
-    """, unsafe_allow_html=True)
+st.set_page_config(page_title="ERP 綜合管理系統", layout="wide")
 
 @st.cache_resource
 def init_connection():
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
-def fetch_data():
-    supabase = init_connection()
-    # 抓取資料並關聯供應商名稱
-    response = supabase.table("products").select("name, stock, vendors(name)").execute()
-    data = response.data
-    if data:
-        # 扁平化 JSON 資料
-        df = pd.json_normalize(data)
-        df.columns = ['商品名稱', '庫存數量', '供應商']
-        return df
-    return pd.DataFrame()
+supabase = init_connection()
 
-# --- 側邊欄篩選 ---
-st.sidebar.header("🛠️ 篩選控制台")
-df = fetch_data()
+# --- 分頁功能 ---
+tab1, tab2 = st.tabs(["📦 庫存概況", "🚚 已出貨訂單"])
 
-if not df.empty:
-    all_vendors = ["全部"] + sorted(df['供應商'].unique().tolist())
-    selected_vendor = st.sidebar.selectbox("選擇供應商", all_vendors)
+# --- Tab 1: 庫存概況 (原本的功能) ---
+with tab1:
+    st.header("即時庫存明細")
+    res_p = supabase.table("products").select("name, stock, vendors(name)").execute()
+    if res_p.data:
+        df_p = pd.json_normalize(res_p.data)
+        df_p.columns = ['商品名稱', '庫存數量', '供應商']
+        st.dataframe(df_p, use_container_width=True)
+    else:
+        st.info("尚無庫存資料")
+
+# --- Tab 2: 已出貨訂單 ---
+with tab2:
+    st.header("已出貨訂單紀錄")
     
-    # 庫存預警門檻
-    low_stock_threshold = st.sidebar.slider("低庫存預警門檻", 0, 50, 10)
-
-    # 根據篩選器過濾資料
-    display_df = df.copy()
-    if selected_vendor != "全部":
-        display_df = display_df[display_df['供應商'] == selected_vendor]
-
-    # --- 主介面 ---
-    st.title("📊 東京機房 - 即時庫存儀表板")
+    # 從 Supabase 抓取訂單，並關聯商品名稱
+    # 注意：這裡假設你在 orders 表有設 product_id 關聯 products
+    res_o = supabase.table("orders").select("order_number, customer_name, quantity, shipped_at, products(name)").execute()
     
-    # 1. 頂部 KPI 指標
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("品項總數", len(display_df))
-    with col2:
-        st.metric("當前總庫存", int(display_df['庫存數量'].sum()))
-    with col3:
-        low_stock_count = len(display_df[display_df['庫存數量'] <= low_stock_threshold])
-        st.metric("低庫存警示", low_stock_count, delta_color="inverse")
+    if res_o.data:
+        df_o = pd.json_normalize(res_o.data)
+        
+        # 整理欄位名稱
+        df_o = df_o[['order_number', 'products.name', 'quantity', 'customer_name', 'shipped_at']]
+        df_o.columns = ['訂單編號', '商品名稱', '出貨數量', '客戶名稱', '出貨時間']
+        
+        # 轉換時間格式（讓閱讀更友善）
+        df_o['出貨時間'] = pd.to_datetime(df_o['出貨時間']).dt.strftime('%Y-%m-%d %H:%M')
 
-    st.divider()
+        # 顯示指標
+        c1, c2 = st.columns(2)
+        c1.metric("累計出貨訂單", len(df_o))
+        c2.metric("總出貨件數", int(df_o['出貨數量'].sum()))
 
-    # 2. 圖表分析
-    c1, c2 = st.columns([6, 4])
-    with c1:
-        st.subheader("📦 庫存分布圖")
-        st.bar_chart(data=display_df, x="商品名稱", y="庫存數量", color="#29b5e8")
-    
-    with c2:
-        st.subheader("⚠️ 低庫存清單")
-        warning_df = display_df[display_df['庫存數量'] <= low_stock_threshold].sort_values('庫存數量')
-        if not warning_df.empty:
-            st.warning(f"以下 {len(warning_df)} 項商品庫存不足！")
-            st.table(warning_df)
-        else:
-            st.success("目前庫存充足")
-
-    # 3. 詳細資料表格 (具備搜尋功能)
-    st.subheader("📑 詳細資料明細")
-    search_query = st.text_input("搜尋商品關鍵字...")
-    if search_query:
-        display_df = display_df[display_df['商品名稱'].str.contains(search_query, case=False)]
-    
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-else:
-    st.error("暫無資料，請確認資料庫中已有內容。")
+        # 顯示表格
+        st.dataframe(df_o, use_container_width=True, hide_index=True)
+        
+        # 簡易趨勢圖 (按日期統計出貨量)
+        st.subheader("出貨趨勢")
+        df_o['日期'] = pd.to_datetime(df_o['出貨時間']).dt.date
+        trend_df = df_o.groupby('日期')['出貨數量'].sum().reset_index()
+        st.line_chart(data=trend_df, x="日期", y="出貨數量")
+        
+    else:
+        st.warning("目前還沒有任何出貨紀錄。")
