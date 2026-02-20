@@ -1,22 +1,33 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
+import socket
 
 st.set_page_config(page_title="ERP 庫存報表", layout="wide")
 st.title("📊 東京機房 - 即時庫存報表")
 
-# 建立連線函數
 def get_connection():
+    # --- 關鍵修正：強制將網址解析為 IPv4 ---
+    host = st.secrets["DB_HOST"]
+    port = st.secrets["DB_PORT"]
+    
+    try:
+        # 這裡會強迫解析出 13.115.x.x 這種 IPv4 格式
+        resolved_ip = socket.getaddrinfo(host, port, socket.AF_INET)[0][4][0]
+    except Exception:
+        resolved_ip = host # 萬一解析失敗則用原網址
+    
     return psycopg2.connect(
-        host=st.secrets["DB_HOST"],
+        host=resolved_ip,
         database=st.secrets["DB_NAME"],
         user=st.secrets["DB_USER"],
         password=st.secrets["DB_PASSWORD"],
-        port=st.secrets["DB_PORT"]
+        port=port,
+        connect_timeout=15
     )
 
 try:
-    with st.spinner('正在從東京抓取最新庫存...'):
+    with st.spinner('正在與東京機房連線中...'):
         conn = get_connection()
         query = """
         SELECT p.name AS 商品名稱, p.stock AS 庫存數量, v.name AS 供應商
@@ -34,12 +45,11 @@ try:
     with col2:
         st.metric("庫存總量", int(df['庫存數量'].sum()) if not df.empty else 0)
 
-    # 顯示表格
+    # 顯示表格與圖表
     st.dataframe(df, use_container_width=True)
-    
-    # 顯示圖表
     if not df.empty:
         st.bar_chart(data=df, x="商品名稱", y="庫存數量")
 
 except Exception as e:
-    st.error(f"❌ 網頁連線資料庫失敗：{e}")
+    st.error(f"❌ 網頁連線資料庫失敗")
+    st.info(f"技術細節：{e}")
