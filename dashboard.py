@@ -2,60 +2,106 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client
 
-# 頁面配置
-st.set_page_config(page_title="ERP 綜合管理系統", layout="wide")
+# --- 頁面配置 ---
+st.set_page_config(page_title="ERP 雲端管理系統", layout="wide")
 
+# --- 初始化連線 ---
 @st.cache_resource
 def init_connection():
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 supabase = init_connection()
 
-# --- 分頁功能 ---
-tab1, tab2 = st.tabs(["📦 庫存概況", "🚚 已出貨訂單"])
+# --- 自定義 CSS ---
+st.markdown("""
+    <style>
+    [data-testid="stMetricValue"] { font-size: 28px; color: #1E88E5; }
+    .low-stock { color: #D32F2F; font-weight: bold; }
+    </style>
+""", unsafe_allow_html=True)
 
-# --- Tab 1: 庫存概況 (原本的功能) ---
+# --- 資料讀取函數 ---
+def get_products():
+    res = supabase.table("products").select("name, stock, vendors(name)").execute()
+    if res.data:
+        df = pd.json_normalize(res.data)
+        df.columns = ['商品名稱', '庫存數量', '供應商']
+        return df
+    return pd.DataFrame()
+
+def get_orders():
+    res = supabase.table("orders").select("order_number, customer_name, quantity, platform, logistics, shipped_at, products(name)").execute()
+    if res.data:
+        df = pd.json_normalize(res.data)
+        df.columns = ['訂單編號', '客戶名稱', '出貨數量', '平台', '物流', '出貨時間', '商品名稱']
+        return df
+    return pd.DataFrame()
+
+# --- 主程式 ---
+st.title("🚀 ERP 雲端戰情室")
+
+tab1, tab2 = st.tabs(["📦 即時庫存概況", "🚚 已出貨訂單"])
+
+# --- Tab 1: 即時庫存概況 ---
 with tab1:
-    st.header("即時庫存明細")
-    res_p = supabase.table("products").select("name, stock, vendors(name)").execute()
-    if res_p.data:
-        df_p = pd.json_normalize(res_p.data)
-        df_p.columns = ['商品名稱', '庫存數量', '供應商']
-        st.dataframe(df_p, use_container_width=True)
+    df_p = get_products()
+    if not df_p.empty:
+        # 側邊欄篩選: 供應商
+        vendors = ["全部"] + sorted(df_p['供應商'].unique().tolist())
+        sel_vendor = st.sidebar.selectbox("📦 篩選供應商", vendors)
+        
+        # 側邊欄設定: 低庫存門檻
+        threshold = st.sidebar.number_input("⚠️ 低庫存警示門檻", value=10, min_value=0)
+
+        # 執行篩選
+        if sel_vendor != "全部":
+            df_p = df_p[df_p['供應商'] == sel_vendor]
+
+        # 顯示指標
+        low_stock_list = df_p[df_p['庫存數量'] <= threshold]
+        c1, c2 = st.columns(2)
+        c1.metric("當前篩選品項", len(df_p))
+        c2.metric("低庫存預警", len(low_stock_list), delta=f"低於 {threshold}", delta_color="inverse")
+
+        # 警告通知
+        if not low_stock_list.empty:
+            st.error(f"🚨 注意：以下商品庫存低於 {threshold} 件！")
+            st.dataframe(low_stock_list, use_container_width=True, hide_index=True)
+        else:
+            st.success("✅ 目前所有品項庫存水位正常")
+
+        st.subheader("完整庫存清單")
+        st.dataframe(df_p.style.highlight_between(left=0, right=threshold, subset=['庫存數量'], color='#FFEBEE'), use_container_width=True)
     else:
-        st.info("尚無庫存資料")
+        st.info("尚無庫存資料。")
 
 # --- Tab 2: 已出貨訂單 ---
 with tab2:
-    st.header("已出貨訂單紀錄")
-    
-    # 從 Supabase 抓取訂單，並關聯商品名稱
-    # 注意：這裡假設你在 orders 表有設 product_id 關聯 products
-    res_o = supabase.table("orders").select("order_number, customer_name, quantity, shipped_at, products(name)").execute()
-    
-    if res_o.data:
-        df_o = pd.json_normalize(res_o.data)
+    df_o = get_orders()
+    if not df_o.empty:
+        col_f1, col_f2 = st.columns(2)
         
-        # 整理欄位名稱
-        df_o = df_o[['order_number', 'products.name', 'quantity', 'customer_name', 'shipped_at']]
-        df_o.columns = ['訂單編號', '商品名稱', '出貨數量', '客戶名稱', '出貨時間']
+        # 篩選控制項
+        platforms = ["全部"] + sorted(df_o['平台'].unique().astype(str).tolist())
+        logistics_list = ["全部"] + sorted(df_o['物流'].unique().astype(str).tolist())
         
-        # 轉換時間格式（讓閱讀更友善）
-        df_o['出貨時間'] = pd.to_datetime(df_o['出貨時間']).dt.strftime('%Y-%m-%d %H:%M')
+        with col_f1:
+            sel_platform = st.selectbox("🛒 篩選出貨平台", platforms)
+        with col_f2:
+            sel_logistics = st.selectbox("🚛 篩選物流方式", logistics_list)
 
-        # 顯示指標
-        c1, c2 = st.columns(2)
-        c1.metric("累計出貨訂單", len(df_o))
-        c2.metric("總出貨件數", int(df_o['出貨數量'].sum()))
+        # 執行篩選
+        filtered_o = df_o.copy()
+        if sel_platform != "全部":
+            filtered_o = filtered_o[filtered_o['平台'] == sel_platform]
+        if sel_logistics != "全部":
+            filtered_o = filtered_o[filtered_o['物流'] == sel_logistics]
 
-        # 顯示表格
-        st.dataframe(df_o, use_container_width=True, hide_index=True)
+        # 顯示統計
+        st.metric("顯示訂單總數", len(filtered_o))
         
-        # 簡易趨勢圖 (按日期統計出貨量)
-        st.subheader("出貨趨勢")
-        df_o['日期'] = pd.to_datetime(df_o['出貨時間']).dt.date
-        trend_df = df_o.groupby('日期')['出貨數量'].sum().reset_index()
-        st.line_chart(data=trend_df, x="日期", y="出貨數量")
-        
+        # 顯示清單
+        st.subheader("出貨明細紀錄")
+        st.dataframe(filtered_o, use_container_width=True, hide_index=True)
     else:
-        st.warning("目前還沒有任何出貨紀錄。")
+        st.info("尚無訂單資料。")
