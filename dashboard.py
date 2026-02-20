@@ -8,7 +8,6 @@ st.set_page_config(page_title="ERP 權限管理系統", layout="wide")
 # --- 1. 登入與等級檢查邏輯 ---
 def check_password():
     def password_entered():
-        # 安全讀取 secrets
         auth_data = st.secrets.get("auth", {})
         u_name = st.session_state.get("username", "")
         u_pw = st.session_state.get("password", "")
@@ -22,23 +21,34 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.title("🔐 ERP 系統登入")
-        col_l, _ = st.columns([1, 1])
-        with col_l:
-            st.text_input("帳號 (Username)", key="username")
-            st.text_input("密碼 (Password)", type="password", key="password")
-            st.button("登入系統", on_click=password_entered)
+        # --- 登入視覺設計 ---
+        # 建立三個欄位，讓圖片置中
+        _, center_col, _ = st.columns([1, 2, 1])
+        
+        with center_col:
+            # 這裡建議把圖片放在 GitHub 根目錄命名為 mascot.jpg
+            # 如果還沒上傳，可以暫時用下方註解掉的網路範例連結測試
+            try:
+                st.image("mascot.jpg", use_container_width=True)
+            except:
+                st.warning("請將吉祥物圖片命名為 mascot.jpg 並上傳至 GitHub 倉庫。")
+                
+            st.markdown("<h2 style='text-align: center; color: #D32F2F;'>🧧 招財進寶 ERP 系統</h2>", unsafe_allow_html=True)
+            
+            # 登入框放在圖片下方
+            with st.container(border=True):
+                st.text_input("帳號 (Username)", key="username")
+                st.text_input("密碼 (Password)", type="password", key="password")
+                st.button("確認登入", on_click=password_entered, use_container_width=True)
         return False
+        
     elif not st.session_state["password_correct"]:
-        st.title("🔐 ERP 系統登入")
-        st.error("❌ 帳號或密碼錯誤")
-        st.text_input("帳號 (Username)", key="username")
-        st.text_input("密碼 (Password)", type="password", key="password")
-        st.button("登入系統", on_click=password_entered)
-        return False
+        st.error("❌ 帳號或密碼錯誤，請重新輸入。")
+        # 登入失敗時也維持圖片顯示
+        st.rerun()
     return True
 
-# --- 2. 核心主程式 ---
+# --- 2. 核心主程式 (驗證通過後執行) ---
 if check_password():
     user_level = st.session_state["user_level"]
     current_user = st.session_state["current_user"]
@@ -72,11 +82,9 @@ if check_password():
         try:
             res_p = supabase.table("products").select("name, stock, vendors(name)").execute()
             if res_p.data:
-                # 修正後的 json_normalize 寫法
                 df_p = pd.json_normalize(res_p.data)
                 df_p.columns = ['商品名稱', '庫存數量', '供應商']
                 
-                # 篩選
                 v_list = ["全部"] + sorted(df_p['供應商'].unique().tolist())
                 sel_v = st.sidebar.selectbox("📦 篩選供應商", v_list)
                 if sel_v != "全部":
@@ -84,7 +92,6 @@ if check_password():
                 
                 st.dataframe(df_p, use_container_width=True, hide_index=True)
 
-                # Level 9 管理功能
                 if user_level >= 9:
                     st.divider()
                     st.subheader("🛠️ 管理員快速校正")
@@ -93,7 +100,7 @@ if check_password():
                         new_val = st.number_input("修正數量", min_value=0, step=1)
                         if st.button("確認提交"):
                             supabase.table("products").update({"stock": new_val}).eq("name", target).execute()
-                            st.success("已更新，請稍候...")
+                            st.success("數據已更新")
                             st.cache_resource.clear()
                             st.rerun()
             else:
@@ -114,11 +121,10 @@ if check_password():
                 else:
                     st.info("尚無訂單紀錄。")
             except:
-                st.warning("訂單表讀取失敗，請確認資料表是否存在。")
+                st.warning("訂單表讀取失敗。")
 
     # --- TAB 3: 管理 (Level 9) ---
     if user_level >= 9:
         with tabs[-1]:
             st.header("🔑 系統管理員控制台")
-            st.write("此區域僅等級 9 帳號可見。")
             st.button("📥 下載全庫存備份 (CSV)")
