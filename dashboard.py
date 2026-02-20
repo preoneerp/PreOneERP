@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
+from datetime import datetime, date, timedelta
 
 # --- 頁面基本配置 ---
 st.set_page_config(page_title="ERP 雲端數據中心", layout="wide")
@@ -35,7 +36,6 @@ def check_password():
                 st.text_input("密碼", type="password", key="password")
                 st.button("登入系統", on_click=password_entered, use_container_width=True)
         return False
-        
     elif not st.session_state["password_correct"]:
         st.error("❌ 帳號或密碼錯誤")
         return False
@@ -52,11 +52,10 @@ if check_password():
     
     supabase = init_connection()
 
-    # --- 側邊欄：資訊與全域篩選 ---
+    # --- 側邊欄 ---
     st.sidebar.markdown(f"### 👤 使用者：{current_user}")
     st.sidebar.markdown(f"🛡️ 權限等級：**Level {user_level}**")
     
-    # 低庫存門檻設定
     low_stock_threshold = st.sidebar.slider("⚠️ 安全庫存預警門檻", 0, 100, 10)
     
     if st.sidebar.button("登出系統"):
@@ -73,7 +72,7 @@ if check_password():
     
     tabs = st.tabs(tab_titles)
 
-    # --- TAB 1: 庫存概況 (含低庫存提示) ---
+    # --- TAB 1: 庫存概況 ---
     with tabs[0]:
         st.header("庫存數據明細")
         try:
@@ -82,42 +81,25 @@ if check_password():
                 df_p = pd.json_normalize(res_p.data)
                 df_p.columns = ['商品名稱', '庫存數量', '供應商']
                 
-                # 供應商篩選
                 v_list = ["全部"] + sorted(df_p['供應商'].unique().tolist())
                 sel_v = st.sidebar.selectbox("📦 篩選供應商", v_list)
                 if sel_v != "全部":
                     df_p = df_p[df_p['供應商'] == sel_v]
                 
-                # --- 低庫存提示邏輯 ---
                 low_stock_items = df_p[df_p['庫存數量'] <= low_stock_threshold]
-                
                 if not low_stock_items.empty:
-                    st.error(f"🚨 【預警】共有 {len(low_stock_items)} 項商品低於安全庫存 ({low_stock_threshold})！")
-                    with st.expander("查看待補貨清單"):
-                        st.table(low_stock_items)
-                else:
-                    st.success("✅ 目前所有商品庫存充足")
-
-                # 表格美化：低於門檻的儲存格顯示紅色背景
+                    st.error(f"🚨 【預警】共有 {len(low_stock_items)} 項商品低於安全庫存！")
+                
                 def highlight_low_stock(s):
                     return ['background-color: #ffcccc' if s.name == '庫存數量' and v <= low_stock_threshold else '' for v in s]
 
-                st.subheader("完整庫存清單")
-                st.dataframe(
-                    df_p.style.apply(highlight_low_stock, axis=0), 
-                    use_container_width=True, 
-                    hide_index=True
-                )
-                
-                # 下載功能
-                csv = df_p.to_csv(index=False).encode('utf-8-sig')
-                st.download_button("📥 下載當前庫存表 (CSV)", csv, "inventory.csv", "text/csv")
+                st.dataframe(df_p.style.apply(highlight_low_stock, axis=0), use_container_width=True, hide_index=True)
             else:
                 st.info("尚無庫存資料。")
         except Exception as e:
             st.error(f"連線異常: {e}")
 
-    # --- TAB 2: 已出貨訂單 ---
+    # --- TAB 2: 已出貨訂單 (新增日期、平台、物流篩選) ---
     if user_level >= 5:
         with tabs[1]:
             st.header("歷史出貨紀錄")
@@ -127,19 +109,64 @@ if check_password():
                     df_o = pd.json_normalize(res_o.data)
                     df_o.columns = ['訂單編號', '客戶', '數量', '平台', '物流', '時間', '商品名稱']
                     
-                    st.dataframe(df_o, use_container_width=True, hide_index=True)
+                    # 資料預處理：轉換時間格式
+                    df_o['時間'] = pd.to_datetime(df_o['時間'])
+                    df_o['日期'] = df_o['時間'].dt.date
                     
-                    csv_o = df_o.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button("📥 下載出貨清單 (CSV)", csv_o, "orders.csv", "text/csv")
+                    # --- 篩選介面佈局 ---
+                    st.write("🔍 **篩選查詢**")
+                    c1, c2, c3 = st.columns(3)
+                    
+                    with c1:
+                        # 日期區間篩選
+                        today = date.today()
+                        last_month = today - timedelta(days=30)
+                        date_range = st.date_input("選擇日期區間", value=(last_month, today))
+                    
+                    with c2:
+                        p_list = ["全部"] + sorted(df_o['平台'].unique().astype(str).tolist())
+                        sel_p = st.selectbox("🛒 篩選平台", p_list)
+                    
+                    with c3:
+                        l_list = ["全部"] + sorted(df_o['物流'].unique().astype(str).tolist())
+                        sel_l = st.selectbox("🚛 篩選物流", l_list)
+
+                    # --- 執行過濾邏輯 ---
+                    filtered_df = df_o.copy()
+                    
+                    # 1. 日期過濾 (判斷是否有選起始與結束)
+                    if len(date_range) == 2:
+                        start_date, end_date = date_range
+                        filtered_df = filtered_df[(filtered_df['日期'] >= start_date) & (filtered_df['日期'] <= end_date)]
+                    
+                    # 2. 平台過濾
+                    if sel_p != "全部":
+                        filtered_df = filtered_df[filtered_df['平台'] == sel_p]
+                    
+                    # 3. 物流過濾
+                    if sel_l != "全部":
+                        filtered_df = filtered_df[filtered_df['物流'] == sel_l]
+
+                    # --- 顯示結果 ---
+                    st.write(f"📊 查詢結果：共 {len(filtered_df)} 筆訂單")
+                    
+                    # 整理顯示欄位（隱藏中間處理用的'日期'欄位）
+                    display_df = filtered_df.drop(columns=['日期'])
+                    # 將時間轉回字串顯示
+                    display_df['時間'] = display_df['時間'].dt.strftime('%Y-%m-%d %H:%M')
+                    
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    
+                    # 下載功能
+                    csv_o = display_df.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button("📥 下載篩選後清單 (CSV)", csv_o, "filtered_orders.csv", "text/csv")
                 else:
                     st.info("尚無訂單紀錄。")
-            except:
-                st.warning("訂單讀取異常。")
+            except Exception as e:
+                st.warning(f"訂單讀取異常: {e}")
 
-    # --- TAB 3: 報表導出 (Level 9) ---
+    # --- TAB 3: 報表導出 ---
     if user_level >= 9:
         with tabs[-1]:
             st.header("⚙️ 系統報表導出中心")
-            st.write("此處提供管理員進行全系統數據匯出。")
-            st.button("🚀 產生年度庫存分析報表 (PDF預留)")
-            st.button("📈 產生銷售通路統計報表 (CSV)")
+            st.button("🚀 產生年度分析報表")
