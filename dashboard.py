@@ -18,7 +18,7 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 登入邏輯 (修復刷新問題) ---
+# --- 3. 登入邏輯 (維持不變) ---
 def check_password():
     if st.session_state.get("password_correct", False):
         return True
@@ -63,7 +63,7 @@ if check_password():
     if user_level >= 9: tab_list.append("📊 報表匯出中心")
     tabs = st.tabs(tab_list)
 
-    # --- TAB 1: 即時庫存 (新增供應商篩選) ---
+    # --- TAB 1: 即時庫存 (新增供應商篩選 + 自定義安全庫存) ---
     with tabs[0]:
         st.subheader("📋 商品在庫明細")
         try:
@@ -72,14 +72,19 @@ if check_password():
                 df_p = pd.DataFrame(res_p.data)
                 df_p.columns = [c.lower() for c in df_p.columns]
                 
-                # --- 新增：供應商篩選介面 ---
-                # 取得不重複的供應商清單（排除 None/空值）
-                if 'v_name' in df_p.columns:
-                    v_list = ["全部供應商"] + sorted([str(x) for x in df_p['v_name'].unique() if x])
-                else:
-                    v_list = ["全部供應商"]
+                # --- 篩選與設定區 ---
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    # 供應商篩選
+                    if 'v_name' in df_p.columns:
+                        v_list = ["全部供應商"] + sorted([str(x) for x in df_p['v_name'].unique() if x])
+                    else:
+                        v_list = ["全部供應商"]
+                    sel_v = st.selectbox("🔍 篩選供應商", v_list)
                 
-                sel_v = st.selectbox("🔍 篩選供應商", v_list)
+                with c2:
+                    # 自定義安全庫存標準
+                    safe_stock_limit = st.number_input("🛡️ 安全庫存標準", min_value=0, value=10, step=1)
                 
                 # 執行篩選邏輯
                 if sel_v != "全部供應商":
@@ -87,10 +92,11 @@ if check_password():
                 else:
                     filtered_df_p = df_p
 
-                # 庫存警示 (基於篩選後的結果)
-                low_stock_count = len(filtered_df_p[filtered_df_p['stock'] < 10])
+                # 庫存警示 (基於自定義標準)
+                low_stock_df = filtered_df_p[filtered_df_p['stock'] < safe_stock_limit]
+                low_stock_count = len(low_stock_df)
                 if low_stock_count > 0:
-                    st.warning(f"🔔 注意：當前篩選範圍內有 {low_stock_count} 項商品庫存低於 10！")
+                    st.warning(f"🔔 注意：當前篩選範圍內有 {low_stock_count} 項商品庫存低於安全標準 ({safe_stock_limit})！")
 
                 # 顯示表格
                 rename_p = {'name': '商品名稱', 'stock': '在庫數量', 'v_name': '供應商'}
@@ -112,11 +118,9 @@ if check_password():
                     df_o = pd.DataFrame(res_o.data)
                     df_o.columns = [c.lower() for c in df_o.columns]
                     
-                    # 統一處理時間
                     df_o['timestamp'] = pd.to_datetime(df_o['timestamp'])
                     df_o['日期'] = df_o['timestamp'].dt.date
 
-                    # 篩選功能
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         d_range = st.date_input("日期區間", [date.today() - timedelta(days=30), date.today()])
@@ -127,14 +131,12 @@ if check_password():
                         modes = ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x])
                         sel_mode = st.selectbox("模式", modes)
 
-                    # 篩選邏輯
                     mask = (df_o['日期'] >= d_range[0]) & (df_o['日期'] <= d_range[1])
                     if sel_plt != "全部": mask &= (df_o['platform'] == sel_plt)
                     if sel_mode != "全部": mask &= (df_o['mode'] == sel_mode)
                     
                     filtered_df = df_o[mask].sort_values('timestamp', ascending=False)
                     
-                    # 重新命名欄位以便顯示
                     final_rename = {
                         'p_name': '商品名稱', 'quantity': '數量', 'mode': '變動模式',
                         'platform': '平台', 'logistics': '物流', 'timestamp': '紀錄時間'
@@ -143,7 +145,6 @@ if check_password():
                     display_cols = [c for c in final_rename.values() if c in show_df.columns]
                     st.dataframe(show_df[display_cols], use_container_width=True, hide_index=True)
                     
-                    # 存入 Session 給報表分頁
                     st.session_state["filtered_report"] = show_df[display_cols]
                 else:
                     st.warning("📭 雲端目前沒有歷史紀錄。請確保在 GUI 版本中點擊了「數據搬家」。")
