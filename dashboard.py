@@ -54,7 +54,7 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 登入邏輯 (保持原則) ---
+# --- 3. 登入邏輯 ---
 def check_password():
     if st.session_state.get("password_correct", False):
         return True
@@ -86,20 +86,20 @@ if check_password():
     user_level = st.session_state["user_level"]
     
     with st.sidebar:
+        # --- 權限層級文字已移除，僅保留使用者名稱 ---
         st.markdown(f"### 🌸 你好，{st.session_state['current_user']}")
-        st.caption(f"權限層級：Level {user_level}")
         st.divider()
         if st.button("🚪 安全登出", use_container_width=True):
             st.session_state.clear()
             st.rerun()
 
-    # --- 分頁名稱更新 ---
+    # --- 分頁管理 (後台邏輯仍保留 user_level 判斷，但前端不顯示) ---
     tab_list = ["☁️ 庫存清單"]
-    if user_level >= 5: tab_list.append("📦 出貨紀錄")  # 原變動紀錄
+    if user_level >= 5: tab_list.append("📦 出貨紀錄")
     if user_level >= 9: tab_list.append("💾 數據匯出")
     tabs = st.tabs(tab_list)
 
-    # --- TAB 1: 即時庫存 (包含供應商篩選、安全庫存設定) ---
+    # --- TAB 1: 即時庫存 ---
     with tabs[0]:
         try:
             res_p = supabase.table("products").select("*").execute()
@@ -107,7 +107,6 @@ if check_password():
                 df_p = pd.DataFrame(res_p.data)
                 df_p.columns = [c.lower() for c in df_p.columns]
                 
-                # 篩選區
                 with st.container(border=True):
                     c1, c2 = st.columns([2, 1])
                     v_list = ["✨ 全部供應商"] + sorted([str(x) for x in df_p['v_name'].unique() if x])
@@ -118,7 +117,6 @@ if check_password():
                 low_count = len(filtered_df[filtered_df['stock'] < safe_limit])
                 total_stock = int(filtered_df['stock'].sum())
 
-                # 三格等寬卡片呈現
                 st.markdown(f"""
                     <div class="dashboard-container">
                         <div class="status-card card-1">
@@ -138,7 +136,6 @@ if check_password():
                     </div>
                 """, unsafe_allow_html=True)
 
-                # 表格顯示
                 display_df = filtered_df.copy()
                 display_df['狀態'] = display_df['stock'].apply(lambda x: '❗ 補貨' if x < safe_limit else '✅ 正常')
                 final_df = display_df.rename(columns={'name':'商品名稱','stock':'數量','v_name':'供應商','狀態':'庫存狀態'})
@@ -147,7 +144,7 @@ if check_password():
             else: st.info("雲端目前無庫存資料。")
         except Exception as e: st.error(f"錯誤: {e}")
 
-    # --- TAB 2: 出貨紀錄 (保持篩選功能不變) ---
+    # --- TAB 2: 出貨紀錄 ---
     if user_level >= 5:
         with tabs[1]:
             st.subheader("📦 出貨歷史追蹤")
@@ -159,7 +156,6 @@ if check_password():
                     df_o['timestamp'] = pd.to_datetime(df_o['timestamp'])
                     df_o['日期'] = df_o['timestamp'].dt.date
 
-                    # 保持原有篩選原則
                     with st.container(border=True):
                         c1, c2, c3 = st.columns(3)
                         with c1:
@@ -171,14 +167,12 @@ if check_password():
                             modes = ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x if x])
                             sel_mode = st.selectbox("出貨類型", modes)
 
-                    # 篩選邏輯
                     mask = (df_o['日期'] >= d_range[0]) & (df_o['日期'] <= d_range[1])
                     if sel_plt != "全部": mask &= (df_o['platform'] == sel_plt)
                     if sel_mode != "全部": mask &= (df_o['mode'] == sel_mode)
                     
                     show_o = df_o[mask].sort_values('timestamp', ascending=False)
                     final_o = show_o.rename(columns={'p_name':'商品','quantity':'數量','mode':'模式','platform':'平台','logistics':'物流','timestamp':'時間'})
-                    
                     st.dataframe(final_o[['時間','商品','數量','模式','平台','物流']], use_container_width=True, hide_index=True)
                     st.session_state["filtered_report"] = final_o
                 else:
@@ -193,5 +187,4 @@ if check_password():
                 csv = st.session_state["filtered_report"].to_csv(index=False).encode('utf-8-sig')
                 st.download_button(label="📥 下載已篩選的出貨報表", data=csv, file_name=f"ERP_Report_{date.today()}.csv", use_container_width=True)
             else:
-                st.info("💡 請先到『出貨紀錄』分頁進行篩選後再來匯出。")
-
+                st.info("💡 請先到『出貨紀錄』分頁進行篩選。")
