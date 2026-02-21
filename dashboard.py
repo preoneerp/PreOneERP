@@ -79,7 +79,7 @@ def check_password():
                     st.session_state["current_user"] = u
                 else: st.error("🔒 密碼不正確")
 
-            st.button("開啟美力系統", on_click=password_entered, use_container_width=True)
+            st.button("登入系統", on_click=password_entered, use_container_width=True)
     return False
 
 if check_password():
@@ -194,3 +194,4 @@ if check_password():
                 st.download_button(label="📥 下載已篩選的出貨報表", data=csv, file_name=f"ERP_Report_{date.today()}.csv", use_container_width=True)
             else:
                 st.info("💡 請先到『出貨紀錄』分頁進行篩選後再來匯出。")
+
