@@ -63,26 +63,38 @@ if check_password():
     if user_level >= 9: tab_list.append("📊 報表匯出中心")
     tabs = st.tabs(tab_list)
 
-    # --- TAB 1: 即時庫存 (恢復單一清單狀態) ---
+    # --- TAB 1: 即時庫存 (新增供應商篩選) ---
     with tabs[0]:
         st.subheader("📋 商品在庫明細")
         try:
             res_p = supabase.table("products").select("*").execute()
             if res_p.data:
                 df_p = pd.DataFrame(res_p.data)
-                
-                # 自動對齊欄位 (兼容大小寫)
                 df_p.columns = [c.lower() for c in df_p.columns]
                 
-                # 庫存警示 (僅顯示警示文字，不重複生成表格)
-                low_stock_count = len(df_p[df_p['stock'] < 10])
-                if low_stock_count > 0:
-                    st.warning(f"🔔 注意：當前有 {low_stock_count} 項商品庫存低於 10！")
+                # --- 新增：供應商篩選介面 ---
+                # 取得不重複的供應商清單（排除 None/空值）
+                if 'v_name' in df_p.columns:
+                    v_list = ["全部供應商"] + sorted([str(x) for x in df_p['v_name'].unique() if x])
+                else:
+                    v_list = ["全部供應商"]
+                
+                sel_v = st.selectbox("🔍 篩選供應商", v_list)
+                
+                # 執行篩選邏輯
+                if sel_v != "全部供應商":
+                    filtered_df_p = df_p[df_p['v_name'] == sel_v]
+                else:
+                    filtered_df_p = df_p
 
-                # 只保留一個標準瀏覽清單
+                # 庫存警示 (基於篩選後的結果)
+                low_stock_count = len(filtered_df_p[filtered_df_p['stock'] < 10])
+                if low_stock_count > 0:
+                    st.warning(f"🔔 注意：當前篩選範圍內有 {low_stock_count} 項商品庫存低於 10！")
+
+                # 顯示表格
                 rename_p = {'name': '商品名稱', 'stock': '在庫數量', 'v_name': '供應商'}
-                # 篩選出需要的欄位並顯示
-                display_p = df_p.rename(columns=rename_p)
+                display_p = filtered_df_p.rename(columns=rename_p)
                 available_cols = [c for c in rename_p.values() if c in display_p.columns]
                 st.dataframe(display_p[available_cols], use_container_width=True, hide_index=True)
             else:
@@ -90,7 +102,7 @@ if check_password():
         except Exception as e:
             st.error(f"庫存讀取出錯: {e}")
 
-    # --- TAB 2: 歷史紀錄 (修復無資料顯示) ---
+    # --- TAB 2: 歷史紀錄 (維持不變) ---
     if user_level >= 5:
         with tabs[1]:
             st.subheader("🔎 歷史變動紀錄")
@@ -138,7 +150,7 @@ if check_password():
             except Exception as e:
                 st.error(f"紀錄讀取失敗: {e}")
 
-    # --- TAB 3: 報表匯出 ---
+    # --- TAB 3: 報表匯出 (維持不變) ---
     if user_level >= 9:
         with tabs[-1]:
             st.subheader("📥 數據報表導出")
