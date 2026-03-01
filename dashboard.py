@@ -126,10 +126,12 @@ if check_password():
     # --- TAB 2: 出貨紀錄 (台北時間) ---
     if user_level >= 5:
         with tabs[1]:
-            res_o = supabase.table("order_history").select("*").neq("mode", "物流統計").execute()
+            res_o = supabase.table("order_history").select("*").execute()
             if res_o.data:
                 df_o = to_taipei_time(pd.DataFrame(res_o.data))
                 df_o.columns = [c.lower() for c in df_o.columns]
+                # 過濾掉物流統計(如果舊資料還在的話)，確保出貨紀錄乾淨
+                df_o = df_o[df_o['mode'] != "物流統計"]
                 df_o['日期'] = df_o['timestamp'].dt.date
                 with st.container(border=True):
                     c1, c2, c3 = st.columns(3)
@@ -146,13 +148,18 @@ if check_password():
                 st.dataframe(final_o[['時間','p_name','quantity','mode','platform','logistics']].rename(columns={'p_name':'商品','quantity':'數量'}), use_container_width=True, hide_index=True)
                 st.session_state["filtered_report"] = final_o
 
-    # --- TAB 3: 物流件數 (台北時間) ---
+    # --- TAB 3: 物流件數 (從 shipping_log 讀取) ---
     if user_level >= 5:
         with tabs[2]:
-            res_l = supabase.table("order_history").select("*").eq("mode", "物流統計").execute()
+            # 修改處：從專用的 shipping_log 表格讀取
+            res_l = supabase.table("shipping_log").select("*").execute()
             if res_l.data:
                 df_l = to_taipei_time(pd.DataFrame(res_l.data))
                 df_l.columns = [c.lower() for c in df_l.columns]
+                # 橋接欄位：將 shipping_log 的 count 對接到網頁需要的 quantity
+                if 'count' in df_l.columns:
+                    df_l['quantity'] = df_l['count']
+                
                 st.markdown(f"""<div class="dashboard-container"><div class="status-card card-logistics">
                     <div class="card-title">🚚 台北時間累計包裹總數</div><div class="card-value">{int(df_l['quantity'].sum())} 件</div>
                 </div></div>""", unsafe_allow_html=True)
