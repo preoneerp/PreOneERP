@@ -69,15 +69,6 @@ if not st.session_state["password_correct"]:
     st.stop()
 
 # --- 5. 主系統介面 ---
-user_level = st.session_state["user_level"]
-curr_user = st.session_state["current_user"]
-
-with st.sidebar:
-    st.markdown(f"### 🌸 你好，{curr_user}")
-    if st.button("🚪 安全登出", use_container_width=True):
-        st.session_state.clear()
-        st.rerun()
-
 tabs = st.tabs(["☁️ 庫存清單", "📦 出貨紀錄", "🚚 物流件數", "💾 數據匯出"])
 
 # --- TAB 1: 庫存清單 ---
@@ -85,7 +76,7 @@ with tabs[0]:
     res_p = supabase.table("products").select("*").execute()
     if res_p.data:
         df_p = smart_process(pd.DataFrame(res_p.data))
-        v_col = 'v_name' if 'v_name' in df_p.columns else df_p.columns[-1]
+        v_col = 'v_name' if 'v_name' in df_p.columns else 'vendor' if 'vendor' in df_p.columns else df_p.columns[-1]
         
         with st.container(border=True):
             c1, c2 = st.columns([2, 1])
@@ -112,107 +103,108 @@ with tabs[1]:
         df_o = smart_process(pd.DataFrame(res_o.data))
         df_o['pure_date'] = df_o['tz_fixed'].dt.date
         i_col = 'p_name' if 'p_name' in df_o.columns else 'name'
+        p_col = 'platform' if 'platform' in df_o.columns else 'plt_name' if 'plt_name' in df_o.columns else 'platform'
+        m_col = 'mode'
         
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns(4)
             dr = c1.date_input("📅 範圍", [date.today() - timedelta(days=7), date.today() + timedelta(days=1)], key="order_dr")
-            
-            p_col = 'platform' if 'platform' in df_o.columns else 'platform'
             sel_plt = c2.selectbox("平台", ["全部"] + sorted([str(x) for x in df_o[p_col].unique() if x]), key="order_plt")
-            
-            m_col = 'mode' if 'mode' in df_o.columns else 'mode'
-            sel_mode = c3.selectbox("模式", ["全部"] + sorted([str(x) for x in df_o[m_col].unique() if x]), key="order_mode")
-
+            sel_mode = c3.selectbox("模式", ["全部"] + sorted([str(x) for x in df_o[m_col].unique() if x]) if m_col in df_o.columns else ["全部"], key="order_mode")
             items_list = sorted([str(x) for x in df_o[i_col].unique() if x and "【物流登記】" not in str(x)])
             sel_item = c4.selectbox("商品搜尋", ["全部"] + items_list)
 
         start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
         mask = (df_o['pure_date'] >= start_d) & (df_o['pure_date'] <= end_d)
         mask &= (~df_o[i_col].str.contains("【物流登記】", na=False))
-        
         if sel_plt != "全部": mask &= (df_o[p_col] == sel_plt)
-        if sel_mode != "全部": mask &= (df_o[m_col] == sel_mode)
+        if m_col in df_o.columns and sel_mode != "全部": mask &= (df_o[m_col] == sel_mode)
         if sel_item != "全部": mask &= (df_o[i_col] == sel_item)
         
         final_o = df_o[mask].sort_values('tz_fixed', ascending=False)
-        
         if not final_o.empty:
             final_o['時間'] = final_o['tz_fixed'].dt.strftime('%Y-%m-%d %H:%M')
-            st.dataframe(final_o[['時間', i_col, 'quantity', m_col, p_col, 'logistics']].rename(columns={i_col:'商品','quantity':'數量'}), 
-                         use_container_width=True, hide_index=True)
+            cols_to_show = ['時間', i_col, 'quantity', p_col, 'logistics']
+            if m_col in final_o.columns: cols_to_show.insert(3, m_col)
+            st.dataframe(final_o[cols_to_show].rename(columns={i_col:'商品','quantity':'數量'}), use_container_width=True, hide_index=True)
             st.session_state["filtered_report"] = final_o
-        else:
-            st.info("💡 目前範圍內無出貨數據。")
-    else:
-        st.warning("雲端無歷史紀錄。")
+        else: st.info("💡 目前範圍內無出貨數據。")
 
-# --- TAB 3: 物流件數 (新增平台、物流、時間篩選) ---
+# --- TAB 3: 物流件數 (修正 KeyError 與篩選) ---
 with tabs[2]:
     res_l = supabase.table("shipping_log").select("*").execute()
     res_o_log = supabase.table("order_history").select("*").execute()
     
-    df_l = smart_process(pd.DataFrame(res_l.data)) if res_l.data else pd.DataFrame()
-    df_o_all = smart_process(pd.DataFrame(res_o_log.data)) if res_o_log.data else pd.DataFrame()
+    df_l = smart_process(pd.DataFrame(res_l.data))
+    df_o_all = smart_process(pd.DataFrame(res_o_log.data))
     
-    # 提取物流登記資料
-    df_logistic_entry = pd.DataFrame()
-    if not df_o_all.empty:
-        df_o_all['pure_date'] = df_o_all['tz_fixed'].dt.date
-        i_col_o = 'p_name' if 'p_name' in df_o_all.columns else 'name'
-        df_logistic_entry = df_o_all[df_o_all[i_col_o].str.contains("【物流登記】", na=False)].copy()
+    # 統一欄位名稱偵測，防止 KeyError
+    def get_col(df, options):
+        for opt in options:
+            if opt in df.columns: return opt
+        return None
 
-    # --- 篩選區塊 ---
+    l_plt_col = get_col(df_l, ['platform', 'plt_name'])
+    l_logi_col = get_col(df_l, ['logistics', 'logi_name'])
+    o_plt_col = get_col(df_o_all, ['platform', 'plt_name'])
+    o_logi_col = get_col(df_o_all, ['logistics', 'logi_name'])
+    o_name_col = get_col(df_o_all, ['p_name', 'name'])
+
+    # 提取物流登記
+    df_entry = pd.DataFrame()
+    if not df_o_all.empty and o_name_col:
+        df_o_all['pure_date'] = df_o_all['tz_fixed'].dt.date
+        df_entry = df_o_all[df_o_all[o_name_col].str.contains("【物流登記】", na=False)].copy()
+
+    # --- 篩選區 ---
     with st.container(border=True):
         c1, c2, c3 = st.columns(3)
-        # 1. 時間篩選
         l_dr = c1.date_input("📅 時間範圍", [date.today() - timedelta(days=7), date.today() + timedelta(days=1)], key="logi_dr")
         l_start, l_end = (l_dr[0], l_dr[1]) if len(l_dr) > 1 else (l_dr[0], l_dr[0])
         
-        # 2. 平台篩選 (整合兩表平台)
-        all_plt = sorted(list(set(df_l['platform'].unique().tolist() + df_logistic_entry['platform'].unique().tolist()))) if not df_l.empty or not df_logistic_entry.empty else []
-        sel_l_plt = c2.selectbox("平台篩選", ["全部"] + [str(x) for x in all_plt], key="logi_plt")
+        # 整合平台選項
+        p_list = []
+        if not df_l.empty and l_plt_col: p_list += df_l[l_plt_col].unique().tolist()
+        if not df_entry.empty and o_plt_col: p_list += df_entry[o_plt_col].unique().tolist()
+        sel_l_plt = c2.selectbox("平台篩選", ["全部"] + sorted([str(x) for x in set(p_list) if x]), key="logi_plt")
         
-        # 3. 物流篩選 (整合兩表物流)
-        all_logi = sorted(list(set(df_l['logistics'].unique().tolist() + df_logistic_entry['logistics'].unique().tolist()))) if not df_l.empty or not df_logistic_entry.empty else []
-        sel_l_logi = c3.selectbox("物流方式", ["全部"] + [str(x) for x in all_logi], key="logi_way")
+        # 整合物流選項
+        lg_list = []
+        if not df_l.empty and l_logi_col: lg_list += df_l[l_logi_col].unique().tolist()
+        if not df_entry.empty and o_logi_col: lg_list += df_entry[o_logi_col].unique().tolist()
+        sel_l_logi = c3.selectbox("物流方式", ["全部"] + sorted([str(x) for x in set(lg_list) if x]), key="logi_way")
 
-    # 執行篩選邏輯
-    if not df_logistic_entry.empty:
-        l_mask = (df_logistic_entry['pure_date'] >= l_start) & (df_logistic_entry['pure_date'] <= l_end)
-        if sel_l_plt != "全部": l_mask &= (df_logistic_entry['platform'] == sel_l_plt)
-        if sel_l_logi != "全部": l_mask &= (df_logistic_entry['logistics'] == sel_l_logi)
-        df_logistic_entry = df_logistic_entry[l_mask]
+    # 執行篩選
+    if not df_entry.empty:
+        e_mask = (df_entry['pure_date'] >= l_start) & (df_entry['pure_date'] <= l_end)
+        if sel_l_plt != "全部" and o_plt_col: e_mask &= (df_entry[o_plt_col] == sel_l_plt)
+        if sel_l_logi != "全部" and o_logi_col: e_mask &= (df_entry[o_logi_col] == sel_l_logi)
+        df_entry = df_entry[e_mask]
 
     if not df_l.empty:
         df_l['pure_date'] = df_l['tz_fixed'].dt.date
-        base_mask = (df_l['pure_date'] >= l_start) & (df_l['pure_date'] <= l_end)
-        if sel_l_plt != "全部": base_mask &= (df_l['platform'] == sel_l_plt)
-        if sel_l_logi != "全部": base_mask &= (df_l['logistics'] == sel_l_logi)
-        df_l = df_l[base_mask]
+        b_mask = (df_l['pure_date'] >= l_start) & (df_l['pure_date'] <= l_end)
+        if sel_l_plt != "全部" and l_plt_col: b_mask &= (df_l[l_plt_col] == sel_l_plt)
+        if sel_l_logi != "全部" and l_logi_col: b_mask &= (df_l[l_logi_col] == sel_l_logi)
+        df_l = df_l[b_mask]
 
-    # 計算總額
-    q_col_l = 'count' if not df_l.empty and 'count' in df_l.columns else 'quantity'
-    total_ship = int(df_l[q_col_l].sum()) if not df_l.empty else 0
-    total_entry = int(df_logistic_entry['quantity'].sum()) if not df_logistic_entry.empty else 0
+    # 總計與顯示
+    q_col_l = get_col(df_l, ['count', 'quantity'])
+    total = (int(df_l[q_col_l].sum()) if not df_l.empty and q_col_l else 0) + (int(df_entry['quantity'].sum()) if not df_entry.empty else 0)
     
     st.markdown(f"""<div class="dashboard-container"><div class="status-card card-logistics">
-        <div class="card-title">🚚 篩選累計包裹總數</div><div class="card-value">{total_ship + total_entry} 件</div>
+        <div class="card-title">🚚 篩選累計包裹總數</div><div class="card-value">{total} 件</div>
     </div></div>""", unsafe_allow_html=True)
     
-    if not df_logistic_entry.empty:
-        st.write("📋 物流登記內容 (篩選結果)")
-        df_logistic_entry['時間'] = df_logistic_entry['tz_fixed'].dt.strftime('%m/%d %H:%M')
-        st.dataframe(df_logistic_entry[['時間', i_col_o, 'quantity', 'platform', 'logistics']].rename(columns={i_col_o:'登記項目','quantity':'件數'}), 
-                     use_container_width=True, hide_index=True)
-        st.divider()
+    if not df_entry.empty:
+        st.write("📋 物流登記內容")
+        df_entry['時間'] = df_entry['tz_fixed'].dt.strftime('%m/%d %H:%M')
+        st.dataframe(df_entry[['時間', o_name_col, 'quantity', o_plt_col, o_logi_col]].rename(columns={o_name_col:'項目','quantity':'件數'}), use_container_width=True, hide_index=True)
 
     if not df_l.empty:
-        st.write("🚚 基礎物流紀錄 (篩選結果)")
+        st.write("🚚 基礎物流紀錄")
         df_l['時間'] = df_l['tz_fixed'].dt.strftime('%m/%d %H:%M')
-        st.dataframe(df_l.sort_values('tz_fixed', ascending=False)[['時間','platform','logistics', q_col_l]].rename(columns={q_col_l:'件數'}), 
-                     use_container_width=True, hide_index=True)
-    elif df_logistic_entry.empty:
-        st.info("💡 此篩選條件下無物流資料。")
+        st.dataframe(df_l.sort_values('tz_fixed', ascending=False)[['時間', l_plt_col, l_logi_col, q_col_l]].rename(columns={q_col_l:'件數'}), use_container_width=True, hide_index=True)
 
 # --- TAB 4: 數據匯出 ---
 with tabs[3]:
