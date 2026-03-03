@@ -36,12 +36,14 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據自動修復工具 (已修正台北時區顯示) ---
+# --- 3. 數據自動修復工具 (已修正台北時區與日期同步) ---
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
     df.columns = [str(c).strip().lower() for c in df.columns]
+    
     # 尋找時間欄位
     t_col = next((c for c in df.columns if 'timestamp' in c or 'time' in c or 'created_at' in c), None)
+    
     if t_col:
         # 將原始數據轉為日期時間物件
         df[t_col] = pd.to_datetime(df[t_col], errors='coerce')
@@ -51,9 +53,12 @@ def smart_process(df):
         if df[t_col].dt.tz is None:
             df[t_col] = df[t_col].dt.tz_localize('UTC')
         
-        # 2. 轉換為台北時間 (Asia/Taipei)
-        # 3. .dt.tz_localize(None) 是為了移除顯示時末尾的 +08:00，讓表格更乾淨
+        # 2. 轉換為台北時間 (Asia/Taipei) 並移除時區標籤以便乾淨顯示
         df['tz_fixed'] = df[t_col].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        
+        # 3. 重要修正：確保 pure_date 是基於台北時間的「日期」，避免篩選位移
+        df['pure_date'] = df['tz_fixed'].dt.date
+        
     return df
 
 # --- 4. 登入邏輯 ---
@@ -109,7 +114,6 @@ with tabs[1]:
     res_o = supabase.table("order_history").select("*").execute()
     if res_o.data:
         df_o = smart_process(pd.DataFrame(res_o.data))
-        df_o['pure_date'] = df_o['tz_fixed'].dt.date
         i_col = 'p_name' if 'p_name' in df_o.columns else 'name'
         p_col = 'platform' if 'platform' in df_o.columns else 'plt_name' if 'plt_name' in df_o.columns else 'platform'
         m_col = 'mode'
@@ -123,6 +127,7 @@ with tabs[1]:
             sel_item = c4.selectbox("商品搜尋", ["全部"] + items_list)
 
         start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
+        # 修正：這裡的 pure_date 現在是台北時間日期
         mask = (df_o['pure_date'] >= start_d) & (df_o['pure_date'] <= end_d)
         mask &= (~df_o[i_col].str.contains("【物流登記】", na=False))
         if sel_plt != "全部": mask &= (df_o[p_col] == sel_plt)
@@ -159,7 +164,6 @@ with tabs[2]:
 
     df_entry = pd.DataFrame()
     if not df_o_all.empty and o_name_col:
-        df_o_all['pure_date'] = df_o_all['tz_fixed'].dt.date
         df_entry = df_o_all[df_o_all[o_name_col].str.contains("【物流登記】", na=False)].copy()
 
     with st.container(border=True):
@@ -178,13 +182,14 @@ with tabs[2]:
         sel_l_logi = c3.selectbox("物流方式", ["全部"] + sorted([str(x) for x in set(lg_list) if x]), key="logi_way")
 
     if not df_entry.empty:
+        # 使用台北時間日期篩選
         e_mask = (df_entry['pure_date'] >= l_start) & (df_entry['pure_date'] <= l_end)
         if sel_l_plt != "全部" and o_plt_col: e_mask &= (df_entry[o_plt_col] == sel_l_plt)
         if sel_l_logi != "全部" and o_logi_col: e_mask &= (df_entry[o_logi_col] == sel_l_logi)
         df_entry = df_entry[e_mask]
 
     if not df_l.empty:
-        df_l['pure_date'] = df_l['tz_fixed'].dt.date
+        # 使用台北時間日期篩選
         b_mask = (df_l['pure_date'] >= l_start) & (df_l['pure_date'] <= l_end)
         if sel_l_plt != "全部" and l_plt_col: b_mask &= (df_l[l_plt_col] == sel_l_plt)
         if sel_l_logi != "全部" and l_logi_col: b_mask &= (df_l[l_logi_col] == sel_l_logi)
@@ -199,12 +204,12 @@ with tabs[2]:
     
     if not df_entry.empty:
         st.write("📋 物流登記內容")
-        df_entry['時間'] = df_entry['tz_fixed'].dt.strftime('%Y-%m-%d %H:%M')
+        df_entry['時間'] = df_entry['tz_fixed'].dt.strftime('%m/%d %H:%M')
         st.dataframe(df_entry[['時間', o_name_col, 'quantity', o_plt_col, o_logi_col]].rename(columns={o_name_col:'項目','quantity':'件數'}), use_container_width=True, hide_index=True)
 
     if not df_l.empty:
         st.write("🚚 基礎物流紀錄")
-        df_l['時間'] = df_l['tz_fixed'].dt.strftime('%Y-%m-%d %H:%M')
+        df_l['時間'] = df_l['tz_fixed'].dt.strftime('%m/%d %H:%M')
         st.dataframe(df_l.sort_values('tz_fixed', ascending=False)[['時間', l_plt_col, l_logi_col, q_col_l]].rename(columns={q_col_l:'件數'}), use_container_width=True, hide_index=True)
 
 # --- TAB 4: 數據匯出 ---
