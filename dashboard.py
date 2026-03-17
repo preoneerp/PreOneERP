@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px  # 記得在環境安裝 plotly
 from supabase import create_client
 from datetime import datetime, date, timedelta
 import pytz
 
-# --- 1. 頁面配置與進階視覺設計 ---
-st.set_page_config(page_title="培玩雲端 ERP 2.0", layout="wide", initial_sidebar_state="expanded")
+# --- 1. 頁面配置與視覺設計 ---
+st.set_page_config(page_title="培玩雲端 ERP", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
@@ -18,7 +17,6 @@ st.markdown("""
     }
     .metric-value { font-size: 1.8rem; font-weight: bold; color: #2C3E50; }
     .metric-label { color: #7F8C8D; font-size: 0.9rem; }
-    .stButton>button { border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -37,16 +35,14 @@ supabase = init_connection()
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
     df.columns = [str(c).strip().lower() for c in df.columns]
-    
     t_col = next((c for c in df.columns if any(keyword in c for keyword in ['timestamp', 'time', 'created_at'])), None)
-    
     if t_col:
-        # 修復 3/9 後格式：強制轉台北時間並移除時區資訊以便比對
+        # 強制轉台北時間並移除時區資訊以便比對
         df['tz_fixed'] = pd.to_datetime(df[t_col], utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df['pure_date'] = df['tz_fixed'].dt.date
     return df
 
-# --- 4. 登入邏輯 (保持原設定) ---
+# --- 4. 登入邏輯 ---
 if "password_correct" not in st.session_state:
     st.session_state["password_correct"] = False
 
@@ -66,33 +62,27 @@ if not st.session_state["password_correct"]:
                 else: st.error("🔒 帳號或密碼不正確")
     st.stop()
 
-# --- 5. 數據抓取 (加載快取) ---
+# --- 5. 數據抓取 ---
 @st.cache_data(ttl=300)
 def fetch_all_data():
     res_p = supabase.table("products").select("*").execute()
     res_o = supabase.table("order_history").select("*").execute()
-    res_l = supabase.table("shipping_log").select("*").execute()
-    return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data), pd.DataFrame(res_l.data)
+    return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
 
-raw_p, raw_o, raw_l = fetch_all_data()
+raw_p, raw_o = fetch_all_data()
 df_p = smart_process(raw_p)
 df_o = smart_process(raw_o)
-df_l = smart_process(raw_l)
 
 # --- 6. 主介面設計 ---
 tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄明細", "🚚 物流件數登記"])
 
-# --- TAB 0: 數據總覽 (優化新增) ---
+# --- TAB 0: 數據總覽 ---
 with tabs[0]:
     st.markdown("### 📈 營運關鍵指標")
     today = date.today()
     this_month = today.replace(day=1)
     
-    # 計算今日與本月數據
     today_o = df_o[df_o['pure_date'] == today]
-    month_o = df_o[df_o['pure_date'] >= this_month]
-    
-    # 物流總件數 (合併計算)
     df_ship_only = df_o[df_o['p_name'].str.contains("物流登記", na=False)]
     today_ship = df_ship_only[df_ship_only['pure_date'] == today]['quantity'].sum()
     month_ship = df_ship_only[df_ship_only['pure_date'] >= this_month]['quantity'].sum()
@@ -103,16 +93,12 @@ with tabs[0]:
     with m3: st.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單品項</div><div class="metric-value">{len(today_o[~today_o["p_name"].str.contains("物流登記", na=False)])} 筆</div></div>', unsafe_allow_html=True)
     with m4: st.markdown(f'<div class="metric-card"><div class="metric-label">低庫存警戒</div><div class="metric-value" style="color:red">{len(df_p[df_p["stock"] < 10])} 項</div></div>', unsafe_allow_html=True)
 
-    # 趨勢圖表
     st.write("---")
+    # 改用 Streamlit 內建圖表，免安裝 plotly
     trend_data = df_ship_only.groupby('pure_date')['quantity'].sum().reset_index()
-    trend_data = trend_data.sort_values('pure_date')
     if not trend_data.empty:
-        fig = px.line(trend_data, x='pure_date', y='quantity', title="每日物流包裹出貨趨勢",
-                      labels={'pure_date': '日期', 'quantity': '包裹件數'},
-                      line_shape="spline", render_mode="svg")
-        fig.update_traces(line_color='#E8A0BF', fill='tozeroy')
-        st.plotly_chart(fig, use_container_width=True)
+        trend_data = trend_data.set_index('pure_date')
+        st.line_chart(trend_data, use_container_width=True)
 
 # --- TAB 1: 庫存狀態 ---
 with tabs[1]:
@@ -124,21 +110,14 @@ with tabs[1]:
     
     f_df_p = df_p if sel_v == "✨ 全部" else df_p[df_p[v_col] == sel_v]
     f_df_p['狀態'] = f_df_p['stock'].apply(lambda x: '❗ 補貨' if x < safe_limit else '✅ 正常')
-    st.dataframe(f_df_p[['狀態', 'name', 'stock', v_col]].rename(columns={'name':'商品名稱','stock':'在庫數量',v_col:'供應商'}), 
-                 use_container_width=True, hide_index=True, height=500)
+    st.dataframe(f_df_p[['狀態', 'name', 'stock', v_col]].rename(columns={'name':'商品名稱','stock':'在庫數量',v_col:'供應商'}), use_container_width=True, hide_index=True)
 
 # --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
-    # 快速日期按鈕
-    q_c1, q_c2, q_c3, q_c4, _ = st.columns([1,1,1,1,4])
-    if q_c1.button("今日", use_container_width=True): st.session_state.order_dr = [today, today]
-    if q_c2.button("昨日", use_container_width=True): st.session_state.order_dr = [today - timedelta(days=1), today - timedelta(days=1)]
-    if q_c3.button("近七日", use_container_width=True): st.session_state.order_dr = [today - timedelta(days=7), today]
-    if q_c4.button("本月", use_container_width=True): st.session_state.order_dr = [this_month, today]
-
+    # 移除快速按鈕，回歸純淨篩選區
     with st.container(border=True):
         cc1, cc2, cc3 = st.columns(3)
-        dr = cc1.date_input("📅 選擇日期範圍", value=st.session_state.get('order_dr', [today - timedelta(days=7), today]), key="order_dr_input")
+        dr = cc1.date_input("📅 選擇日期範圍", [today - timedelta(days=7), today])
         sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
         sel_mode = cc3.selectbox("🔃 模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
 
@@ -150,10 +129,9 @@ with tabs[2]:
     
     final_o = df_o[mask].sort_values('tz_fixed', ascending=False)
     final_o['時間'] = final_o['tz_fixed'].dt.strftime('%Y-%m-%d %H:%M')
-    st.dataframe(final_o[['時間', 'p_name', 'quantity', 'mode', 'platform', 'logistics']].rename(columns={'p_name':'商品','quantity':'數量'}), 
-                 use_container_width=True, hide_index=True)
+    st.dataframe(final_o[['時間', 'p_name', 'quantity', 'mode', 'platform', 'logistics']].rename(columns={'p_name':'商品','quantity':'數量'}), use_container_width=True, hide_index=True)
 
-# --- TAB 3: 物流件數登記 (修正 3/9 後顯示的核心) ---
+# --- TAB 3: 物流件數登記 ---
 with tabs[3]:
     with st.container(border=True):
         lc1, lc2, lc3 = st.columns(3)
@@ -163,14 +141,12 @@ with tabs[3]:
 
     l_start, l_end = (l_dr[0], l_dr[1]) if len(l_dr) > 1 else (l_dr[0], l_dr[0])
     
-    # 核心修復：統一篩選 3/10 之後新版「物流登記」數據
     df_entry = df_o[df_o['p_name'].str.contains("物流登記", na=False)].copy()
     e_mask = (df_entry['pure_date'] >= l_start) & (df_entry['pure_date'] <= l_end)
     if sel_l_plt != "全部": e_mask &= (df_entry['platform'] == sel_l_plt)
     if sel_l_logi != "全部": e_mask &= (df_entry['logistics'] == sel_l_logi)
     df_entry = df_entry[e_mask]
 
-    # 計算總件數
     total_pkgs = int(df_entry['quantity'].sum())
     st.markdown(f"""<div style="background:#E67E22; color:white; padding:20px; border-radius:15px; text-align:center; margin-bottom:20px">
         <div style="font-size:1rem">🚚 篩選區間物流包裹總數</div>
@@ -178,8 +154,7 @@ with tabs[3]:
     </div>""", unsafe_allow_html=True)
     
     df_entry['時間顯示'] = df_entry['tz_fixed'].dt.strftime('%m/%d %H:%M')
-    st.dataframe(df_entry[['時間顯示', 'platform', 'logistics', 'quantity']].rename(columns={'platform':'平台','logistics':'物流','quantity':'件數'}), 
-                 use_container_width=True, hide_index=True)
+    st.dataframe(df_entry[['時間顯示', 'platform', 'logistics', 'quantity']].rename(columns={'platform':'平台','logistics':'物流','quantity':'件數'}), use_container_width=True, hide_index=True)
 
     if st.button("🔄 刷新雲端數據"):
         st.cache_data.clear()
