@@ -1,4 +1,5 @@
 streamlit
 pandas
 supabase
-psycopg2-binary
+plotly
+pytz
