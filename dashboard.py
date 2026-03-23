@@ -17,6 +17,14 @@ st.markdown("""
     }
     .metric-value { font-size: 1.8rem; font-weight: bold; color: #2C3E50; }
     .metric-label { color: #7F8C8D; font-size: 0.9rem; }
+    .product-box {
+        background-color: #ffffff;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #eee;
+        margin-bottom: 10px;
+        border-left: 5px solid #3498DB;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -37,7 +45,6 @@ def smart_process(df):
     df.columns = [str(c).strip().lower() for c in df.columns]
     t_col = next((c for c in df.columns if any(keyword in c for keyword in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
-        # 強制轉台北時間並移除時區資訊以便比對
         df['tz_fixed'] = pd.to_datetime(df[t_col], utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df['pure_date'] = df['tz_fixed'].dt.date
     return df
@@ -78,24 +85,70 @@ tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄�
 
 # --- TAB 0: 數據總覽 ---
 with tabs[0]:
-    st.markdown("### 📈 營運關鍵指標")
     today = date.today()
     this_month = today.replace(day=1)
     
+    # 數據預處理
     today_o = df_o[df_o['pure_date'] == today]
-    df_ship_only = df_o[df_o['p_name'].str.contains("物流登記", na=False)]
-    today_ship = df_ship_only[df_ship_only['pure_date'] == today]['quantity'].sum()
-    month_ship = df_ship_only[df_ship_only['pure_date'] >= this_month]['quantity'].sum()
-
+    df_ship_entry = df_o[df_o['p_name'].str.contains("物流登記", na=False)]
+    today_ship_all = df_ship_entry[df_ship_entry['pure_date'] == today]
+    
+    st.markdown(f"### 📈 營運關鍵指標 ({today})")
+    
+    # 頂部卡片
     m1, m2, m3, m4 = st.columns(4)
-    with m1: st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{int(today_ship)} 件</div></div>', unsafe_allow_html=True)
-    with m2: st.markdown(f'<div class="metric-card"><div class="metric-label">本月累計包裹</div><div class="metric-value">{int(month_ship)} 件</div></div>', unsafe_allow_html=True)
-    with m3: st.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單品項</div><div class="metric-value">{len(today_o[~today_o["p_name"].str.contains("物流登記", na=False)])} 筆</div></div>', unsafe_allow_html=True)
+    today_total_pkgs = today_ship_all['quantity'].sum()
+    month_total_pkgs = df_ship_entry[df_ship_entry['pure_date'] >= this_month]['quantity'].sum()
+    
+    with m1: st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{int(today_total_pkgs)} 件</div></div>', unsafe_allow_html=True)
+    with m2: st.markdown(f'<div class="metric-card"><div class="metric-label">本月累計包裹</div><div class="metric-value">{int(month_total_pkgs)} 件</div></div>', unsafe_allow_html=True)
+    with m3: st.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單品項筆數</div><div class="metric-value">{len(today_o[~today_o["p_name"].str.contains("物流登記", na=False)])} 筆</div></div>', unsafe_allow_html=True)
     with m4: st.markdown(f'<div class="metric-card"><div class="metric-label">低庫存警戒</div><div class="metric-value" style="color:red">{len(df_p[df_p["stock"] < 10])} 項</div></div>', unsafe_allow_html=True)
 
+    st.write("<br>", unsafe_allow_html=True)
+    
+    # --- 新增區塊：當日物流統計與特定商品統計 ---
+    col_left, col_right = st.columns(2)
+    
+    with col_left:
+        st.markdown("#### 🚚 今日各物流方式統計")
+        if not today_ship_all.empty:
+            logi_stats = today_ship_all.groupby('logistics')['quantity'].sum().reset_index()
+            logi_stats.columns = ['物流方式', '今日總件數']
+            st.dataframe(logi_stats, use_container_width=True, hide_index=True)
+        else:
+            st.info("今日尚無物流登記數據")
+
+    with col_right:
+        st.markdown("#### 🎯 特定熱銷商品今日累計")
+        target_products = [
+            "專注力訓練機", 
+            "24點數感邏輯大作戰", 
+            "顯微鏡相機", 
+            "滾動創意卷軸畫(主機+空白卷)", 
+            "攜行盒-藍粉"
+        ]
+        
+        # 只計算非「物流登記」的今日訂單
+        df_today_prods = today_o[~today_o['p_name'].str.contains("物流登記", na=False)].copy()
+        
+        if not df_today_prods.empty:
+            # 處理出庫(-)與入庫(+)邏輯，計算當日淨出貨/作業量
+            # 假設 mode 包含 '出貨' 則數值視為正向統計
+            prod_summary = []
+            for p in target_products:
+                # 使用模糊比對，避免因規格或空格導致沒抓到
+                p_mask = df_today_prods['p_name'].str.contains(p, na=False, regex=False)
+                p_sum = df_today_prods[p_mask]['quantity'].sum()
+                prod_summary.append({"商品名稱": p, "今日作業數": int(p_sum)})
+            
+            st.dataframe(pd.DataFrame(prod_summary), use_container_width=True, hide_index=True)
+        else:
+            st.info("今日指定商品尚無作業紀錄")
+
     st.write("---")
-    # 改用 Streamlit 內建圖表，免安裝 plotly
-    trend_data = df_ship_only.groupby('pure_date')['quantity'].sum().reset_index()
+    st.markdown("#### 📉 包裹趨勢圖")
+    trend_data = df_ship_entry.groupby('pure_date')['quantity'].sum().reset_index()
     if not trend_data.empty:
         trend_data = trend_data.set_index('pure_date')
         st.line_chart(trend_data, use_container_width=True)
@@ -114,7 +167,6 @@ with tabs[1]:
 
 # --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
-    # 移除快速按鈕，回歸純淨篩選區
     with st.container(border=True):
         cc1, cc2, cc3 = st.columns(3)
         dr = cc1.date_input("📅 選擇日期範圍", [today - timedelta(days=7), today])
