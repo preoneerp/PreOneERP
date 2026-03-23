@@ -41,7 +41,7 @@ st.markdown("""
     .product-qty {
         font-size: 2rem;
         font-weight: 800;
-        color: #E67E22; /* 改為橘色代表出貨數 */
+        color: #E67E22;
     }
     .product-unit {
         font-size: 0.8rem;
@@ -117,24 +117,24 @@ with tabs[0]:
     
     st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
     
+    # 這裡定義 target_prods 的搜尋改為精確名稱
     target_prods = [
         {"name": "專注力訓練機", "search": "專注力訓練機"},
         {"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},
-        {"name": "顯微鏡相機", "search": "顯微鏡相機"},
+        {"name": "顯微鏡相機", "search": "顯微鏡相機"}, # 修改：將採用精確比對
         {"name": "創意卷軸畫", "search": "滾動創意卷軸畫(主機+空白卷)"},
         {"name": "攜行盒-藍", "search": "攜行盒-藍"},
         {"name": "攜行盒-粉", "search": "攜行盒-粉"}
     ]
     
-    # 建立標籤網格
     prod_cols = st.columns(6)
-    # 【關鍵修正】：僅過濾 mode 為 '出貨' 的資料進行統計
     df_only_out = today_o[today_o['mode'] == '出貨']
     
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
-            # 計算該商品的純出貨量
-            p_mask = df_only_out['p_name'].str.contains(item['search'], na=False, regex=False)
+            # 【核心修正】：將原本的 .str.contains 改為直接比對 == (精確比對)
+            # 這樣「顯微鏡相機」就不會抓到「顯微鏡相機觀察貼紙」
+            p_mask = (df_only_out['p_name'] == item['search'])
             qty = int(df_only_out[p_mask]['quantity'].sum())
             
             st.markdown(f"""
@@ -175,7 +175,7 @@ with tabs[0]:
             trend_data = trend_data.set_index('pure_date')
             st.line_chart(trend_data, use_container_width=True)
 
-# --- TAB 1, 2, 3 (保持原基礎版功能) ---
+# --- TAB 1, 2, 3 (維持原樣) ---
 with tabs[1]:
     with st.container(border=True):
         c1, c2 = st.columns([2, 1])
