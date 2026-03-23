@@ -33,7 +33,7 @@ st.markdown("""
         color: #5D6D7E;
         margin-bottom: 5px;
         font-weight: 500;
-        height: 2.5rem; /* 統一高度防止錯位 */
+        height: 2.5rem; 
         display: flex;
         align-items: center;
         justify-content: center;
@@ -41,7 +41,7 @@ st.markdown("""
     .product-qty {
         font-size: 2rem;
         font-weight: 800;
-        color: #3498DB;
+        color: #E67E22; /* 改為橘色代表出貨數 */
     }
     .product-unit {
         font-size: 0.8rem;
@@ -93,7 +93,7 @@ if not st.session_state["password_correct"]:
     st.stop()
 
 # --- 5. 數據抓取 ---
-@st.cache_data(ttl=120) # 縮短暫存時間，讓更新更即時
+@st.cache_data(ttl=60) 
 def fetch_all_data():
     res_p = supabase.table("products").select("*").execute()
     res_o = supabase.table("order_history").select("*").execute()
@@ -111,14 +111,12 @@ with tabs[0]:
     today = date.today()
     this_month = today.replace(day=1)
     
-    # 數據預處理
     today_o = df_o[df_o['pure_date'] == today]
     df_ship_entry = df_o[df_o['p_name'].str.contains("物流登記", na=False)]
     today_ship_all = df_ship_entry[df_ship_entry['pure_date'] == today]
     
-    st.markdown(f"### 🎯 今日重點商品統計 ({today})")
+    st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
     
-    # --- 指令修改：商品標籤呈現 ---
     target_prods = [
         {"name": "專注力訓練機", "search": "專注力訓練機"},
         {"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},
@@ -128,15 +126,16 @@ with tabs[0]:
         {"name": "攜行盒-粉", "search": "攜行盒-粉"}
     ]
     
-    # 建立標籤網格（一排 6 個）
+    # 建立標籤網格
     prod_cols = st.columns(6)
-    df_today_prods = today_o[~today_o['p_name'].str.contains("物流登記", na=False)]
+    # 【關鍵修正】：僅過濾 mode 為 '出貨' 的資料進行統計
+    df_only_out = today_o[today_o['mode'] == '出貨']
     
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
-            # 計算該商品的數量
-            p_mask = df_today_prods['p_name'].str.contains(item['search'], na=False, regex=False)
-            qty = int(df_today_prods[p_mask]['quantity'].sum())
+            # 計算該商品的純出貨量
+            p_mask = df_only_out['p_name'].str.contains(item['search'], na=False, regex=False)
+            qty = int(df_only_out[p_mask]['quantity'].sum())
             
             st.markdown(f"""
                 <div class="product-tag">
@@ -176,7 +175,7 @@ with tabs[0]:
             trend_data = trend_data.set_index('pure_date')
             st.line_chart(trend_data, use_container_width=True)
 
-# --- TAB 1: 庫存狀態 (其餘功能皆保持基礎版設計) ---
+# --- TAB 1, 2, 3 (保持原基礎版功能) ---
 with tabs[1]:
     with st.container(border=True):
         c1, c2 = st.columns([2, 1])
@@ -188,7 +187,6 @@ with tabs[1]:
     f_df_p['狀態'] = f_df_p['stock'].apply(lambda x: '❗ 補貨' if x < safe_limit else '✅ 正常')
     st.dataframe(f_df_p[['狀態', 'name', 'stock', v_col]].rename(columns={'name':'商品名稱','stock':'在庫數量',v_col:'供應商'}), use_container_width=True, hide_index=True)
 
-# --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
     with st.container(border=True):
         cc1, cc2, cc3 = st.columns(3)
@@ -206,11 +204,10 @@ with tabs[2]:
     final_o['時間'] = final_o['tz_fixed'].dt.strftime('%Y-%m-%d %H:%M')
     st.dataframe(final_o[['時間', 'p_name', 'quantity', 'mode', 'platform', 'logistics']].rename(columns={'p_name':'商品','quantity':'數量'}), use_container_width=True, hide_index=True)
 
-# --- TAB 3: 物流件數登記 ---
 with tabs[3]:
     with st.container(border=True):
         lc1, lc2, lc3 = st.columns(3)
-        l_dr = lc1.date_input("📅 日期", [today - timedelta(days=7), today])
+        l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=7), today])
         sel_l_plt = lc2.selectbox("平台 ", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
         sel_l_logi = lc3.selectbox("物流 ", ["全部"] + sorted([str(x) for x in df_o['logistics'].unique() if x]))
 
