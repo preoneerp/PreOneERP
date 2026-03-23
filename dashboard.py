@@ -10,20 +10,43 @@ st.set_page_config(page_title="培玩雲端 ERP", layout="wide", initial_sidebar
 st.markdown("""
     <style>
     .stApp { background-color: #FDFBFA; }
+    /* 基礎指標卡片 */
     .metric-card {
         background: white; padding: 20px; border-radius: 15px;
         box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-left: 5px solid #E8A0BF;
-        text-align: left;
+        text-align: left; margin-bottom: 10px;
     }
     .metric-value { font-size: 1.8rem; font-weight: bold; color: #2C3E50; }
     .metric-label { color: #7F8C8D; font-size: 0.9rem; }
-    .product-box {
-        background-color: #ffffff;
-        padding: 15px;
-        border-radius: 10px;
+    
+    /* 商品標籤卡片式設計 */
+    .product-tag {
+        background: #ffffff;
         border: 1px solid #eee;
-        margin-bottom: 10px;
-        border-left: 5px solid #3498DB;
+        border-radius: 12px;
+        padding: 15px;
+        text-align: center;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+    .product-name {
+        font-size: 1rem;
+        color: #5D6D7E;
+        margin-bottom: 5px;
+        font-weight: 500;
+        height: 2.5rem; /* 統一高度防止錯位 */
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .product-qty {
+        font-size: 2rem;
+        font-weight: 800;
+        color: #3498DB;
+    }
+    .product-unit {
+        font-size: 0.8rem;
+        color: #ABB2B9;
+        margin-left: 3px;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -39,7 +62,7 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據自動修復與時區處理工具 ---
+# --- 3. 數據處理工具 ---
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
     df.columns = [str(c).strip().lower() for c in df.columns]
@@ -70,7 +93,7 @@ if not st.session_state["password_correct"]:
     st.stop()
 
 # --- 5. 數據抓取 ---
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=120) # 縮短暫存時間，讓更新更即時
 def fetch_all_data():
     res_p = supabase.table("products").select("*").execute()
     res_o = supabase.table("order_history").select("*").execute()
@@ -93,9 +116,38 @@ with tabs[0]:
     df_ship_entry = df_o[df_o['p_name'].str.contains("物流登記", na=False)]
     today_ship_all = df_ship_entry[df_ship_entry['pure_date'] == today]
     
-    st.markdown(f"### 📈 營運關鍵指標 ({today})")
+    st.markdown(f"### 🎯 今日重點商品統計 ({today})")
     
-    # 頂部卡片
+    # --- 指令修改：商品標籤呈現 ---
+    target_prods = [
+        {"name": "專注力訓練機", "search": "專注力訓練機"},
+        {"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},
+        {"name": "顯微鏡相機", "search": "顯微鏡相機"},
+        {"name": "創意卷軸畫", "search": "滾動創意卷軸畫(主機+空白卷)"},
+        {"name": "攜行盒-藍", "search": "攜行盒-藍"},
+        {"name": "攜行盒-粉", "search": "攜行盒-粉"}
+    ]
+    
+    # 建立標籤網格（一排 6 個）
+    prod_cols = st.columns(6)
+    df_today_prods = today_o[~today_o['p_name'].str.contains("物流登記", na=False)]
+    
+    for i, item in enumerate(target_prods):
+        with prod_cols[i]:
+            # 計算該商品的數量
+            p_mask = df_today_prods['p_name'].str.contains(item['search'], na=False, regex=False)
+            qty = int(df_today_prods[p_mask]['quantity'].sum())
+            
+            st.markdown(f"""
+                <div class="product-tag">
+                    <div class="product-name">{item['name']}</div>
+                    <div class="product-qty">{qty}<span class="product-unit">個</span></div>
+                </div>
+            """, unsafe_allow_html=True)
+
+    st.write("<br>", unsafe_allow_html=True)
+    st.markdown("### 📈 營運關鍵指標")
+    
     m1, m2, m3, m4 = st.columns(4)
     today_total_pkgs = today_ship_all['quantity'].sum()
     month_total_pkgs = df_ship_entry[df_ship_entry['pure_date'] >= this_month]['quantity'].sum()
@@ -107,53 +159,24 @@ with tabs[0]:
 
     st.write("<br>", unsafe_allow_html=True)
     
-    # --- 新增區塊：當日物流統計與特定商品統計 ---
-    col_left, col_right = st.columns(2)
-    
-    with col_left:
-        st.markdown("#### 🚚 今日各物流方式統計")
+    col_l, col_r = st.columns(2)
+    with col_l:
+        st.markdown("#### 🚚 今日各物流統計")
         if not today_ship_all.empty:
             logi_stats = today_ship_all.groupby('logistics')['quantity'].sum().reset_index()
-            logi_stats.columns = ['物流方式', '今日總件數']
+            logi_stats.columns = ['物流方式', '件數']
             st.dataframe(logi_stats, use_container_width=True, hide_index=True)
         else:
-            st.info("今日尚無物流登記數據")
-
-    with col_right:
-        st.markdown("#### 🎯 特定熱銷商品今日累計")
-        target_products = [
-            "專注力訓練機", 
-            "24點數感邏輯大作戰", 
-            "顯微鏡相機", 
-            "滾動創意卷軸畫(主機+空白卷)", 
-            "攜行盒-藍粉"
-        ]
-        
-        # 只計算非「物流登記」的今日訂單
-        df_today_prods = today_o[~today_o['p_name'].str.contains("物流登記", na=False)].copy()
-        
-        if not df_today_prods.empty:
-            # 處理出庫(-)與入庫(+)邏輯，計算當日淨出貨/作業量
-            # 假設 mode 包含 '出貨' 則數值視為正向統計
-            prod_summary = []
-            for p in target_products:
-                # 使用模糊比對，避免因規格或空格導致沒抓到
-                p_mask = df_today_prods['p_name'].str.contains(p, na=False, regex=False)
-                p_sum = df_today_prods[p_mask]['quantity'].sum()
-                prod_summary.append({"商品名稱": p, "今日作業數": int(p_sum)})
+            st.info("今日尚無物流登記")
             
-            st.dataframe(pd.DataFrame(prod_summary), use_container_width=True, hide_index=True)
-        else:
-            st.info("今日指定商品尚無作業紀錄")
+    with col_r:
+        st.markdown("#### 📉 包裹趨勢圖")
+        trend_data = df_ship_entry.groupby('pure_date')['quantity'].sum().reset_index()
+        if not trend_data.empty:
+            trend_data = trend_data.set_index('pure_date')
+            st.line_chart(trend_data, use_container_width=True)
 
-    st.write("---")
-    st.markdown("#### 📉 包裹趨勢圖")
-    trend_data = df_ship_entry.groupby('pure_date')['quantity'].sum().reset_index()
-    if not trend_data.empty:
-        trend_data = trend_data.set_index('pure_date')
-        st.line_chart(trend_data, use_container_width=True)
-
-# --- TAB 1: 庫存狀態 ---
+# --- TAB 1: 庫存狀態 (其餘功能皆保持基礎版設計) ---
 with tabs[1]:
     with st.container(border=True):
         c1, c2 = st.columns([2, 1])
@@ -169,7 +192,7 @@ with tabs[1]:
 with tabs[2]:
     with st.container(border=True):
         cc1, cc2, cc3 = st.columns(3)
-        dr = cc1.date_input("📅 選擇日期範圍", [today - timedelta(days=7), today])
+        dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=7), today])
         sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
         sel_mode = cc3.selectbox("🔃 模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
 
@@ -187,27 +210,25 @@ with tabs[2]:
 with tabs[3]:
     with st.container(border=True):
         lc1, lc2, lc3 = st.columns(3)
-        l_dr = lc1.date_input("📅 物流日期範圍", [today - timedelta(days=7), today])
-        sel_l_plt = lc2.selectbox("平台篩選 ", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
-        sel_l_logi = lc3.selectbox("物流方式 ", ["全部"] + sorted([str(x) for x in df_o['logistics'].unique() if x]))
+        l_dr = lc1.date_input("📅 日期", [today - timedelta(days=7), today])
+        sel_l_plt = lc2.selectbox("平台 ", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
+        sel_l_logi = lc3.selectbox("物流 ", ["全部"] + sorted([str(x) for x in df_o['logistics'].unique() if x]))
 
     l_start, l_end = (l_dr[0], l_dr[1]) if len(l_dr) > 1 else (l_dr[0], l_dr[0])
-    
     df_entry = df_o[df_o['p_name'].str.contains("物流登記", na=False)].copy()
     e_mask = (df_entry['pure_date'] >= l_start) & (df_entry['pure_date'] <= l_end)
     if sel_l_plt != "全部": e_mask &= (df_entry['platform'] == sel_l_plt)
     if sel_l_logi != "全部": e_mask &= (df_entry['logistics'] == sel_l_logi)
     df_entry = df_entry[e_mask]
 
-    total_pkgs = int(df_entry['quantity'].sum())
-    st.markdown(f"""<div style="background:#E67E22; color:white; padding:20px; border-radius:15px; text-align:center; margin-bottom:20px">
-        <div style="font-size:1rem">🚚 篩選區間物流包裹總數</div>
-        <div style="font-size:2.5rem; font-weight:bold">{total_pkgs} 件</div>
+    st.markdown(f"""<div style="background:#E67E22; color:white; padding:15px; border-radius:15px; text-align:center; margin-bottom:20px">
+        <div style="font-size:0.9rem">🚚 篩選區間總件數</div>
+        <div style="font-size:2.2rem; font-weight:bold">{int(df_entry['quantity'].sum())} 件</div>
     </div>""", unsafe_allow_html=True)
     
     df_entry['時間顯示'] = df_entry['tz_fixed'].dt.strftime('%m/%d %H:%M')
     st.dataframe(df_entry[['時間顯示', 'platform', 'logistics', 'quantity']].rename(columns={'platform':'平台','logistics':'物流','quantity':'件數'}), use_container_width=True, hide_index=True)
 
-    if st.button("🔄 刷新雲端數據"):
+    if st.button("🔄 刷新雲端數據", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
