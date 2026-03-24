@@ -3,94 +3,76 @@ import pandas as pd
 from supabase import create_client
 from datetime import datetime, date, timedelta
 
-# --- 1. 配置 ---
-st.set_page_config(page_title="培玩雲端 ERP - 終極診斷版", layout="wide")
+# --- 1. 初始化 ---
+st.set_page_config(page_title="培玩雲端 ERP - 最終修復", layout="wide")
 
-# --- 2. 初始化 ---
 @st.cache_resource
 def init_connection():
-    try:
-        return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-    except: return None
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 supabase = init_connection()
 
-# --- 3. 暴力數據處理 (確保資料不因格式錯誤而消失) ---
-def smart_process(df):
-    if df is None or df.empty: return pd.DataFrame()
-    
-    # 欄位標準化
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    
-    # 文字去空格
-    for col in df.select_dtypes(['object']).columns:
-        df[col] = df[col].astype(str).str.strip()
-    
-    # 尋找時間欄位
-    t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
-    
-    if t_col:
-        # 【暴力解析】使用 errors='coerce'，若解析失敗會變 NaT，但資料列會保留
-        df['dt_object'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
-        
-        # 處理解析失敗的情況 (給予一個預設日期，防止資料消失)
-        df['dt_object'] = df['dt_object'].fillna(pd.Timestamp.now(tz='UTC'))
-        
-        # 轉台北時間
-        df['tz_fixed'] = df['dt_object'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        df['pure_date'] = df['tz_fixed'].dt.date
-    else:
-        df['pure_date'] = date.today()
-        df['tz_fixed'] = datetime.now()
-        
-    return df
-
-# --- 4. 數據抓取 ---
-@st.cache_data(ttl=5) # 縮短至 5 秒
-def fetch_data():
+# --- 2. 數據抓取 (關鍵：加入排序與提高上限) ---
+@st.cache_data(ttl=10)
+def fetch_all_data():
     try:
-        res = supabase.table("order_history").select("*").execute()
+        # 【核心修正】：強制按 ID 倒序排列，並確保抓取最新的一萬筆資料
+        # 這樣最新的 3559, 3566 絕對會排在最前面被抓進來
+        res = supabase.table("order_history") \
+            .select("*") \
+            .order("id", desc=True) \
+            .limit(10000) \
+            .execute()
         return pd.DataFrame(res.data)
     except Exception as e:
-        st.error(f"連線異常: {e}")
+        st.error(f"資料抓取失敗: {e}")
         return pd.DataFrame()
 
-raw_df = fetch_data()
-df_o = smart_process(raw_df)
+# --- 3. 處理數據 ---
+def smart_process(df):
+    if df is None or df.empty: return pd.DataFrame()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    
+    # 僅做基礎轉換，不做任何過濾
+    t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
+    if t_col:
+        df['tz_fixed'] = pd.to_datetime(df[t_col], utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        df['pure_date'] = df['tz_fixed'].dt.date
+    return df
 
-# --- 5. 主介面 ---
-st.title("🧪 數據診斷實驗室")
+raw_o = fetch_all_data()
+df_o = smart_process(raw_o)
+
+# --- 4. 介面呈現 ---
+st.title("📦 出貨數據觀測")
 
 if not df_o.empty:
-    # 這裡提供一個「不設日期過濾」的原始檢查表
-    st.subheader("🛠️ 全量原始數據清單 (不限日期)")
-    st.info(f"目前資料庫中共有 {len(df_o)} 筆資料。")
+    # 直接在最上方顯示一個「ID 搜尋」，測試 3559 是否存在於記憶體中
+    search_id = st.text_input("🔍 輸入 ID 進行定位測試 (例如: 3559)", "")
     
-    # 增加一個搜尋功能，直接搜 ID 或 物流名稱
-    search_q = st.text_input("🔍 快速搜尋 (可輸入 '新竹' 或 '3559')", "")
-    
-    if search_q:
-        # 全表模糊搜尋
-        search_mask = df_o.astype(str).apply(lambda x: x.str.contains(search_q)).any(axis=1)
-        search_result = df_o[search_mask]
-        st.write(f"搜尋結果：{len(search_result)} 筆")
-        st.dataframe(search_result, use_container_width=True)
-    else:
-        # 顯示最近 50 筆
-        st.dataframe(df_o.sort_values('tz_fixed', ascending=False).head(50), use_container_width=True)
+    if search_id:
+        # 強制轉字串比對 id 欄位
+        test_res = df_o[df_o['id'].astype(str) == search_id]
+        if not test_res.empty:
+            st.success(f"✅ 找到 ID {search_id}！")
+            st.write(test_res)
+        else:
+            st.error(f"❌ 記憶體中依然找不到 ID {search_id}")
+            st.write("目前記憶體中最新的 5 筆 ID 為:", df_o['id'].head(5).tolist())
 
     st.write("---")
-    st.subheader("📅 日期過濾測試")
-    today = date.today()
-    sel_date = st.date_input("選擇測試日期", today)
     
-    filtered = df_o[df_o['pure_date'] == sel_date]
-    st.write(f"該日期共有 {len(filtered)} 筆資料")
-    st.dataframe(filtered, use_container_width=True)
+    # 原有的明細表
+    today = date.today()
+    sel_date = st.date_input("選擇日期範圍", [today, today])
+    start_d, end_d = (sel_date[0], sel_date[1]) if len(sel_date) > 1 else (sel_date[0], sel_date[0])
+    
+    display_df = df_o[(df_o['pure_date'] >= start_d) & (df_o['pure_date'] <= end_d)]
+    st.dataframe(display_df.sort_values('id', ascending=False), use_container_width=True)
 
 else:
-    st.error("目前雲端資料庫無回傳資料。")
+    st.warning("雲端無回傳任何資料。")
 
-if st.button("🔄 強制重整"):
+if st.button("🔄 強制刷新"):
     st.cache_data.clear()
     st.rerun()
