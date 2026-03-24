@@ -117,23 +117,23 @@ with tabs[0]:
     
     st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
     
-    # 這裡定義 target_prods 的搜尋改為精確名稱
+    # 這裡定義 target_prods 採用精確比對，避免抓到觀察貼紙
     target_prods = [
         {"name": "專注力訓練機", "search": "舒爾特專注力訓練機Ⅱ"},
         {"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},
-        {"name": "顯微鏡相機", "search": "顯微鏡相機"}, # 修改：將採用精確比對
+        {"name": "顯微鏡相機", "search": "顯微鏡相機"},
         {"name": "創意卷軸畫", "search": "滾動創意卷軸畫(主機+空白卷)"},
         {"name": "攜行盒-藍", "search": "攜行盒-藍(直接出貨)"},
         {"name": "攜行盒-粉", "search": "攜行盒-粉(直接出貨)"}
     ]
     
     prod_cols = st.columns(6)
+    # 【關鍵】：僅統計 mode 為 '出貨' 的紀錄
     df_only_out = today_o[today_o['mode'] == '出貨']
     
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
-            # 【核心修正】：將原本的 .str.contains 改為直接比對 == (精確比對)
-            # 這樣「顯微鏡相機」就不會抓到「顯微鏡相機觀察貼紙」
+            # 使用精確比對 == 確保不會抓到類似名稱品項
             p_mask = (df_only_out['p_name'] == item['search'])
             qty = int(df_only_out[p_mask]['quantity'].sum())
             
