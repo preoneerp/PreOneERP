@@ -25,21 +25,29 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 初始化 ---
+# --- 2. 初始化 Supabase ---
 @st.cache_resource
 def init_connection():
-    try: return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-    except: return None
+    try:
+        return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    except:
+        return None
 
 supabase = init_connection()
 
-# --- 3. 數據處理 ---
+# --- 3. 數據處理 (修正 NameError) ---
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
     df.columns = [str(c).strip().lower() for c in df.columns]
+    
+    # 處理文字欄位去空格
     for col in df.select_dtypes(['object']).columns:
         df[col] = df[col].astype(str).str.strip()
-    t_col = next((c for c in df.columns if any(k in c for keyword in ['timestamp', 'time', 'created_at'])), None)
+    
+    # 尋找時間欄位 (修正處)
+    time_keywords = ['timestamp', 'time', 'created_at']
+    t_col = next((c for c in df.columns if any(k in c for k in time_keywords)), None)
+    
     if t_col:
         df['tz_fixed'] = pd.to_datetime(df[t_col], utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df['pure_date'] = df['tz_fixed'].dt.date
@@ -52,13 +60,14 @@ def fetch_all_data():
         res_p = supabase.table("products").select("*").execute()
         res_o = supabase.table("order_history").select("*").execute()
         return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
-    except: return pd.DataFrame(), pd.DataFrame()
+    except:
+        return pd.DataFrame(), pd.DataFrame()
 
 raw_p, raw_o = fetch_all_data()
 df_p = smart_process(raw_p)
 df_o = smart_process(raw_o)
 
-# --- 主介面 ---
+# --- 6. 主介面 ---
 tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄明細", "🚚 物流件數登記"])
 
 with tabs[0]:
@@ -76,7 +85,7 @@ with tabs[0]:
     ]
     
     cols = st.columns(6)
-    # 計算商品標籤：排除所有物流登記/統計相關的資料，只看純出貨
+    # 僅統計 mode 為 "出貨" 且非物流登記的商品
     df_only_item_out = today_o[(today_o['mode'] == '出貨') & (today_o['p_name'] != "物流登記")]
     for i, item in enumerate(target_prods):
         with cols[i]:
@@ -85,7 +94,7 @@ with tabs[0]:
 
     st.write("---")
     
-    # 包裹總量統計 (關鍵修復：同時採納物流登記名稱與物流統計模式)
+    # 包裹總量 (兼容 物流登記名稱 或 物流統計模式)
     df_ship_summary = today_o[(today_o['p_name'] == "物流登記") | (today_o['mode'] == "物流統計")]
     today_total_pkgs = df_ship_summary['quantity'].sum()
 
@@ -95,8 +104,21 @@ with tabs[0]:
     
     st.markdown("#### 🚚 今日物流分佈")
     if not df_ship_summary.empty:
-        st.dataframe(df_ship_summary.groupby('logistics')['quantity'].sum().reset_index(name='件數'), use_container_width=True, hide_index=True)
-    else: st.info("今日尚無物流登記資料")
+        logi_summary = df_ship_summary.groupby('logistics')['quantity'].sum().reset_index(name='件數')
+        logi_summary.columns = ['物流方式', '總件數']
+        st.dataframe(logi_summary, use_container_width=True, hide_index=True)
+    else:
+        st.info("今日尚未有任何物流登記資料")
+
+with tabs[1]:
+    with st.container(border=True):
+        c1, c2 = st.columns([2, 1])
+        v_col = 'v_name' if 'v_name' in df_p.columns else 'vendor' if 'vendor' in df_p.columns else df_p.columns[-1]
+        sel_v = c1.selectbox("🔍 供應商篩選", ["✨ 全部"] + sorted(list(df_p[v_col].unique())))
+        safe_limit = c2.number_input("🛡️ 預警數量設定", min_value=0, value=10)
+    f_df_p = df_p if sel_v == "✨ 全部" else df_p[df_p[v_col] == sel_v]
+    f_df_p['狀態'] = f_df_p['stock'].apply(lambda x: '❗ 補貨' if x < safe_limit else '✅ 正常')
+    st.dataframe(f_df_p[['狀態', 'name', 'stock', v_col]].rename(columns={'name':'商品名稱','stock':'在庫數量',v_col:'供應商'}), use_container_width=True, hide_index=True)
 
 with tabs[2]:
     cc1, cc2 = st.columns(2)
@@ -104,13 +126,13 @@ with tabs[2]:
     sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
     start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
     
-    # 明細表過濾：絕對排除物流相關統計，保留純商品
     mask = (df_o['pure_date'] >= start_d) & (df_o['pure_date'] <= end_d)
     mask &= (df_o['p_name'] != "物流登記")
     mask &= (df_o['mode'] != "物流統計")
     if sel_plt != "全部": mask &= (df_o['platform'] == sel_plt)
     
-    st.dataframe(df_o[mask].sort_values('tz_fixed', ascending=False)[['tz_fixed', 'p_name', 'quantity', 'mode', 'platform', 'logistics']], use_container_width=True, hide_index=True)
+    final_df = df_o[mask].sort_values('tz_fixed', ascending=False)
+    st.dataframe(final_df[['tz_fixed', 'p_name', 'quantity', 'mode', 'platform', 'logistics']], use_container_width=True, hide_index=True)
 
 with tabs[3]:
     st.info("🚚 包裹總數登記歷史")
