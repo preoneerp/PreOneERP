@@ -62,14 +62,25 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據處理工具 ---
+# --- 3. 數據自動處理工具 (強化去空格邏輯) ---
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
+    
+    # 1. 欄位名稱標準化
     df.columns = [str(c).strip().lower() for c in df.columns]
+    
+    # 2. 【核心修復】自動修剪所有文字內容的前後空格
+    # 解決 "官網 " (多空格) 與 "官網" (篩選器) 不匹配的問題
+    for col in df.select_dtypes(['object']).columns:
+        df[col] = df[col].astype(str).str.strip()
+    
+    # 3. 處理時間欄位
     t_col = next((c for c in df.columns if any(keyword in c for keyword in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
+        # 強制轉為台北時間並移除時區屬性，確保篩選正確
         df['tz_fixed'] = pd.to_datetime(df[t_col], utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df['pure_date'] = df['tz_fixed'].dt.date
+        
     return df
 
 # --- 4. 登入邏輯 ---
@@ -95,9 +106,12 @@ if not st.session_state["password_correct"]:
 # --- 5. 數據抓取 ---
 @st.cache_data(ttl=60) 
 def fetch_all_data():
-    res_p = supabase.table("products").select("*").execute()
-    res_o = supabase.table("order_history").select("*").execute()
-    return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
+    try:
+        res_p = supabase.table("products").select("*").execute()
+        res_o = supabase.table("order_history").select("*").execute()
+        return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
+    except:
+        return pd.DataFrame(), pd.DataFrame()
 
 raw_p, raw_o = fetch_all_data()
 df_p = smart_process(raw_p)
@@ -111,13 +125,14 @@ with tabs[0]:
     today = date.today()
     this_month = today.replace(day=1)
     
+    # 數據預處理
     today_o = df_o[df_o['pure_date'] == today]
     df_ship_entry = df_o[df_o['p_name'].str.contains("物流登記", na=False)]
     today_ship_all = df_ship_entry[df_ship_entry['pure_date'] == today]
     
     st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
     
-    # 這裡定義 target_prods 採用精確比對，避免抓到觀察貼紙
+    # 定義精確搜尋標籤
     target_prods = [
         {"name": "專注力訓練機", "search": "舒爾特專注力訓練機Ⅱ"},
         {"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},
@@ -128,12 +143,12 @@ with tabs[0]:
     ]
     
     prod_cols = st.columns(6)
-    # 【關鍵】：僅統計 mode 為 '出貨' 的紀錄
+    # 僅統計 mode 為 '出貨' 的紀錄
     df_only_out = today_o[today_o['mode'] == '出貨']
     
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
-            # 使用精確比對 == 確保不會抓到類似名稱品項
+            # 精確比對內容
             p_mask = (df_only_out['p_name'] == item['search'])
             qty = int(df_only_out[p_mask]['quantity'].sum())
             
@@ -166,7 +181,7 @@ with tabs[0]:
             logi_stats.columns = ['物流方式', '件數']
             st.dataframe(logi_stats, use_container_width=True, hide_index=True)
         else:
-            st.info("今日尚無物流登記")
+            st.info("今日尚無物流登記數據")
             
     with col_r:
         st.markdown("#### 📉 包裹趨勢圖")
@@ -175,7 +190,7 @@ with tabs[0]:
             trend_data = trend_data.set_index('pure_date')
             st.line_chart(trend_data, use_container_width=True)
 
-# --- TAB 1, 2, 3 (維持原樣) ---
+# --- TAB 1: 庫存狀態 ---
 with tabs[1]:
     with st.container(border=True):
         c1, c2 = st.columns([2, 1])
@@ -187,10 +202,12 @@ with tabs[1]:
     f_df_p['狀態'] = f_df_p['stock'].apply(lambda x: '❗ 補貨' if x < safe_limit else '✅ 正常')
     st.dataframe(f_df_p[['狀態', 'name', 'stock', v_col]].rename(columns={'name':'商品名稱','stock':'在庫數量',v_col:'供應商'}), use_container_width=True, hide_index=True)
 
+# --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
     with st.container(border=True):
         cc1, cc2, cc3 = st.columns(3)
         dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=7), today])
+        # 這裡的下拉選單會因為 smart_process 自動去空格，保證能選到正確資料
         sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
         sel_mode = cc3.selectbox("🔃 模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
 
@@ -204,6 +221,7 @@ with tabs[2]:
     final_o['時間'] = final_o['tz_fixed'].dt.strftime('%Y-%m-%d %H:%M')
     st.dataframe(final_o[['時間', 'p_name', 'quantity', 'mode', 'platform', 'logistics']].rename(columns={'p_name':'商品','quantity':'數量'}), use_container_width=True, hide_index=True)
 
+# --- TAB 3: 物流件數登記 ---
 with tabs[3]:
     with st.container(border=True):
         lc1, lc2, lc3 = st.columns(3)
@@ -219,7 +237,7 @@ with tabs[3]:
     df_entry = df_entry[e_mask]
 
     st.markdown(f"""<div style="background:#E67E22; color:white; padding:15px; border-radius:15px; text-align:center; margin-bottom:20px">
-        <div style="font-size:0.9rem">🚚 篩選區間總件數</div>
+        <div style="font-size:0.9rem">🚚 篩選區間總包裹數</div>
         <div style="font-size:2.2rem; font-weight:bold">{int(df_entry['quantity'].sum())} 件</div>
     </div>""", unsafe_allow_html=True)
     
