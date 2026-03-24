@@ -4,7 +4,7 @@ from supabase import create_client
 from datetime import datetime, date, timedelta
 import pytz
 
-# --- 1. 頁面配置 ---
+# --- 1. 頁面配置與視覺設計 ---
 st.set_page_config(page_title="培玩雲端 ERP", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -13,6 +13,7 @@ st.markdown("""
     .metric-card {
         background: white; padding: 20px; border-radius: 15px;
         box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-left: 5px solid #E8A0BF;
+        text-align: left; margin-bottom: 10px;
     }
     .metric-value { font-size: 1.8rem; font-weight: bold; color: #2C3E50; }
     .metric-label { color: #7F8C8D; font-size: 0.9rem; }
@@ -35,18 +36,18 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據處理 (修正 NameError) ---
+# --- 3. 數據自動處理工具 ---
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
+    # 欄位標準化
     df.columns = [str(c).strip().lower() for c in df.columns]
-    
-    # 處理文字欄位去空格
+    # 字串去前後空格 (針對物流名稱與模式)
     for col in df.select_dtypes(['object']).columns:
         df[col] = df[col].astype(str).str.strip()
     
-    # 尋找時間欄位 (修正處)
-    time_keywords = ['timestamp', 'time', 'created_at']
-    t_col = next((c for c in df.columns if any(k in c for k in time_keywords)), None)
+    # 尋找時間欄位並統一轉換
+    time_keys = ['timestamp', 'time', 'created_at']
+    t_col = next((c for c in df.columns if any(k in c for k in time_keys)), None)
     
     if t_col:
         df['tz_fixed'] = pd.to_datetime(df[t_col], utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
@@ -67,14 +68,15 @@ raw_p, raw_o = fetch_all_data()
 df_p = smart_process(raw_p)
 df_o = smart_process(raw_o)
 
-# --- 6. 主介面 ---
+# --- 5. 主介面設計 ---
 tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄明細", "🚚 物流件數登記"])
 
+# --- TAB 0: 數據總覽 ---
 with tabs[0]:
     today = date.today()
     today_o = df_o[df_o['pure_date'] == today]
     
-    st.markdown(f"### 🎯 今日純出貨統計 ({today})")
+    st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
     target_prods = [
         {"name": "專注力訓練機", "search": "舒爾特專注力訓練機Ⅱ"},
         {"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},
@@ -85,59 +87,55 @@ with tabs[0]:
     ]
     
     cols = st.columns(6)
-    # 僅統計 mode 為 "出貨" 且非物流登記的商品
-    df_only_item_out = today_o[(today_o['mode'] == '出貨') & (today_o['p_name'] != "物流登記")]
+    # 過濾：純出貨商品（排除物流登記與統計紀錄）
+    df_items = today_o[(today_o['mode'] == '出貨') & (today_o['p_name'] != "物流登記")]
+    
     for i, item in enumerate(target_prods):
         with cols[i]:
-            qty = int(df_only_item_out[df_only_item_out['p_name'] == item['search']]['quantity'].sum())
+            qty = int(df_items[df_items['p_name'] == item['search']]['quantity'].sum())
             st.markdown(f'<div class="product-tag"><div class="product-name">{item["name"]}</div><div class="product-qty">{qty}</div></div>', unsafe_allow_html=True)
 
     st.write("---")
     
-    # 包裹總量 (兼容 物流登記名稱 或 物流統計模式)
+    # 【關鍵修正】：件數統計邏輯 (兼容 p_name=物流登記 或 mode=物流統計)
     df_ship_summary = today_o[(today_o['p_name'] == "物流登記") | (today_o['mode'] == "物流統計")]
     today_total_pkgs = df_ship_summary['quantity'].sum()
 
     m1, m2, m3, m4 = st.columns(4)
     with m1: st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹總量</div><div class="metric-value">{int(today_total_pkgs)} 件</div></div>', unsafe_allow_html=True)
-    with m3: st.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單品項筆數</div><div class="metric-value">{len(df_only_item_out)} 筆</div></div>', unsafe_allow_html=True)
+    with m3: st.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單明細筆數</div><div class="metric-value">{len(df_items)} 筆</div></div>', unsafe_allow_html=True)
     
-    st.markdown("#### 🚚 今日物流分佈")
+    st.markdown("#### 🚚 今日物流分佈統計")
     if not df_ship_summary.empty:
-        logi_summary = df_ship_summary.groupby('logistics')['quantity'].sum().reset_index(name='件數')
-        logi_summary.columns = ['物流方式', '總件數']
-        st.dataframe(logi_summary, use_container_width=True, hide_index=True)
+        logi_df = df_ship_summary.groupby('logistics')['quantity'].sum().reset_index()
+        logi_df.columns = ['物流方式', '總件數']
+        st.dataframe(logi_df, use_container_width=True, hide_index=True)
     else:
-        st.info("今日尚未有任何物流登記資料")
+        st.info("今日尚未有物流登記紀錄")
 
-with tabs[1]:
-    with st.container(border=True):
-        c1, c2 = st.columns([2, 1])
-        v_col = 'v_name' if 'v_name' in df_p.columns else 'vendor' if 'vendor' in df_p.columns else df_p.columns[-1]
-        sel_v = c1.selectbox("🔍 供應商篩選", ["✨ 全部"] + sorted(list(df_p[v_col].unique())))
-        safe_limit = c2.number_input("🛡️ 預警數量設定", min_value=0, value=10)
-    f_df_p = df_p if sel_v == "✨ 全部" else df_p[df_p[v_col] == sel_v]
-    f_df_p['狀態'] = f_df_p['stock'].apply(lambda x: '❗ 補貨' if x < safe_limit else '✅ 正常')
-    st.dataframe(f_df_p[['狀態', 'name', 'stock', v_col]].rename(columns={'name':'商品名稱','stock':'在庫數量',v_col:'供應商'}), use_container_width=True, hide_index=True)
-
+# --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
     cc1, cc2 = st.columns(2)
-    dr = cc1.date_input("📅 日期範圍", [today, today])
-    sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
-    start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
+    dr = cc1.date_input("📅 選擇日期", [today, today])
+    sel_plt = cc2.selectbox("📱 篩選平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
     
+    start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
     mask = (df_o['pure_date'] >= start_d) & (df_o['pure_date'] <= end_d)
+    
+    # 這裡確保明細表只顯示商品，排除件數登記
     mask &= (df_o['p_name'] != "物流登記")
     mask &= (df_o['mode'] != "物流統計")
     if sel_plt != "全部": mask &= (df_o['platform'] == sel_plt)
     
-    final_df = df_o[mask].sort_values('tz_fixed', ascending=False)
-    st.dataframe(final_df[['tz_fixed', 'p_name', 'quantity', 'mode', 'platform', 'logistics']], use_container_width=True, hide_index=True)
+    st.dataframe(df_o[mask].sort_values('tz_fixed', ascending=False)[['tz_fixed', 'p_name', 'quantity', 'mode', 'platform', 'logistics']], use_container_width=True, hide_index=True)
 
+# --- TAB 3: 物流件數登記歷史 ---
 with tabs[3]:
-    st.info("🚚 包裹總數登記歷史")
+    st.info("📦 以下為包裹件數登記歷史 (包含物流登記與統計)")
     df_l = df_o[(df_o['p_name'] == "物流登記") | (df_o['mode'] == "物流統計")].copy()
-    st.dataframe(df_l.sort_values('tz_fixed', ascending=False)[['tz_fixed', 'platform', 'logistics', 'quantity']], use_container_width=True, hide_index=True)
-    if st.button("🔄 刷新雲端數據"):
+    if not df_l.empty:
+        st.dataframe(df_l.sort_values('tz_fixed', ascending=False)[['tz_fixed', 'platform', 'logistics', 'quantity']], use_container_width=True, hide_index=True)
+    
+    if st.button("🔄 刷新雲端數據", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
