@@ -71,8 +71,13 @@ def smart_process(df):
     
     t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
-        df['tz_fixed'] = pd.to_datetime(df[t_col], utc=True, errors='coerce').dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        df['pure_date'] = df['tz_fixed'].dt.date
+       # 找到處理 tz_fixed 的地方，改為以下寫法：
+df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
+# 轉換時區並移除時區資訊，確保與後續畫圖邏輯相容
+df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+
+# 關鍵一步：移除掉轉換失敗的空值，避免後端報錯
+df = df.dropna(subset=['tz_fixed'])
     return df
 
 # --- 4. 登入邏輯 ---
