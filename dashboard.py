@@ -71,11 +71,24 @@ def smart_process(df):
     
     t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
-        df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
-        df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        # 關鍵修正：補上 pure_date 欄位，否則前端 filter 永遠抓不到資料
+        # 修正：寬鬆解析時間格式
+        df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce')
+        
+        # 修正：相容性處理 (解決 3/31 前舊資料看不到的問題)
+        def finalize_tz(dt):
+            if pd.isnull(dt): return dt
+            try:
+                # 若帶有時區資訊，轉台北時間並移除時區標籤以利繪圖
+                if dt.tzinfo is not None:
+                    return dt.astimezone(pytz.timezone('Asia/Taipei')).replace(tzinfo=None)
+                return dt
+            except:
+                return dt
+        
+        df['tz_fixed'] = df['tz_fixed'].apply(finalize_tz)
+        # 必須生成 pure_date 供後續所有 Tab 過濾使用
         df['pure_date'] = df['tz_fixed'].dt.date
-    # 關鍵修正：return 必須退回最左邊，確保不論有沒有時間欄位都會回傳結果
+        
     return df
 
 # --- 4. 登入邏輯 ---
@@ -99,11 +112,11 @@ if not st.session_state["password_correct"]:
     st.stop()
 
 # --- 5. 數據抓取 ---
-@st.cache_data(ttl=10) # 縮短緩存時間，讓更新更即時
+@st.cache_data(ttl=10)
 def fetch_all_data():
     try:
-        # 增加 limit 確保新資料能被抓到
-        res_o = supabase.table("order_history").select("*").order("timestamp", desc=True).limit(5000).execute()
+        # 增加上限至 20000 筆，確保歷史資料完整呈現
+        res_o = supabase.table("order_history").select("*").order("timestamp", desc=True).limit(20000).execute()
         res_p = supabase.table("products").select("*").execute()
         return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
     except:
@@ -121,6 +134,7 @@ with tabs[0]:
     today = date.today()
     this_month = today.replace(day=1)
     
+    # 過濾今日資料
     if not df_o.empty and 'pure_date' in df_o.columns:
         today_o = df_o[df_o['pure_date'] == today]
     else:
@@ -138,14 +152,15 @@ with tabs[0]:
     ]
     
     prod_cols = st.columns(6)
+    df_items_only = pd.DataFrame()
     if not today_o.empty:
         df_items_only = today_o[(today_o['mode'].str.contains("出貨", na=False)) & (today_o['p_name'] != "物流登記")]
-    else:
-        df_items_only = pd.DataFrame()
     
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
-            qty = int(df_items_only[df_items_only['p_name'].str.contains(item['search'], na=False)]['quantity'].sum()) if not df_items_only.empty else 0
+            qty = 0
+            if not df_items_only.empty:
+                qty = int(df_items_only[df_items_only['p_name'].str.contains(item['search'], na=False)]['quantity'].sum())
             st.markdown(f"""
                 <div class="product-tag">
                     <div class="product-name">{item['name']}</div>
@@ -162,7 +177,7 @@ with tabs[0]:
         today_total_pkgs = df_ship_summary['quantity'].sum()
         month_total_pkgs = df_ship_all_time[df_ship_all_time['pure_date'] >= this_month]['quantity'].sum()
     else:
-        today_total_pkgs, month_total_pkgs = 0, 0
+        today_total_pkgs, month_total_pkgs, df_ship_summary, df_ship_all_time = 0, 0, pd.DataFrame(), pd.DataFrame()
     
     m1, m2, m3, m4 = st.columns(4)
     with m1: st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{int(today_total_pkgs)} 件</div></div>', unsafe_allow_html=True)
@@ -171,20 +186,18 @@ with tabs[0]:
     with m4: st.markdown(f'<div class="metric-card"><div class="metric-label">低庫存警戒</div><div class="metric-value" style="color:red">{len(df_p[df_p["stock"] < 10]) if not df_p.empty else 0} 項</div></div>', unsafe_allow_html=True)
 
     st.write("<br>", unsafe_allow_html=True)
-    
     col_l, col_r = st.columns(2)
     with col_l:
         st.markdown("#### 🚚 今日物流管道分佈")
-        if not today_o.empty and not df_ship_summary.empty:
+        if not df_ship_summary.empty:
             logi_stats = df_ship_summary.groupby('logistics')['quantity'].sum().reset_index()
             logi_stats.columns = ['物流方式', '件數']
             st.dataframe(logi_stats, use_container_width=True, hide_index=True)
         else:
             st.info("今日尚無物流登記數據")
-            
     with col_r:
         st.markdown("#### 📉 包裹趨勢圖")
-        if not df_o.empty:
+        if not df_ship_all_time.empty:
             trend_data = df_ship_all_time.groupby('pure_date')['quantity'].sum().reset_index()
             if not trend_data.empty:
                 trend_data = trend_data.set_index('pure_date')
