@@ -71,7 +71,7 @@ def smart_process(df):
     
     t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
-        # 修復：強行解析混雜格式，確保 3/31 前資料不遺失
+        # 強制轉換並校準時區，解決 3/31 前後格式不一導致解析失敗的問題
         df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
         df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df['pure_date'] = df['tz_fixed'].dt.date
@@ -97,17 +97,19 @@ if not st.session_state["password_correct"]:
                 else: st.error("🔒 帳號或密碼不正確")
     st.stop()
 
-# --- 5. 數據抓取 (突破 1000 筆物理限制) ---
+# --- 5. 數據抓取 (關鍵修復：強制執行翻頁抓取以突破 1000 筆限制) ---
 @st.cache_data(ttl=10)
 def fetch_all_data():
     try:
-        # 分段讀取 0-3000 筆，確保 3/31 前被擠掉的資料能被抓回來
+        # 由於 Supabase 預設上限 1000，我們必須手動分段抓取 0-3000 筆
         r1 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(0, 999).execute()
         r2 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(1000, 1999).execute()
         r3 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(2000, 2999).execute()
-        res_o_data = r1.data + r2.data + r3.data
+        
+        # 合併三組數據，確保舊資料(3/31前)能被抓回來
+        all_order_data = r1.data + r2.data + r3.data
         res_p = supabase.table("products").select("*").execute()
-        return pd.DataFrame(res_p.data), pd.DataFrame(res_o_data)
+        return pd.DataFrame(res_p.data), pd.DataFrame(all_order_data)
     except:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -136,7 +138,7 @@ with tabs[0]:
     ]
     
     prod_cols = st.columns(6)
-    # 僅計算 mode 為 '出貨' 且非物流登記的品項
+    # 僅計算模式為出貨且排除物流登記的項
     df_items_only = today_o[(today_o['mode'].str.contains("出貨", na=False)) & (~today_o['p_name'].str.contains("物流|包裹", na=False))] if not today_o.empty else pd.DataFrame()
     
     for i, item in enumerate(target_prods):
@@ -164,22 +166,6 @@ with tabs[0]:
     with m2: st.markdown(f'<div class="metric-card"><div class="metric-label">本月累計包裹</div><div class="metric-value">{int(month_total_pkgs)} 件</div></div>', unsafe_allow_html=True)
     with m3: st.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單明細筆數</div><div class="metric-value">{len(df_items_only)} 筆</div></div>', unsafe_allow_html=True)
     with m4: st.markdown(f'<div class="metric-card"><div class="metric-label">低庫存警戒</div><div class="metric-value" style="color:red">{len(df_p[df_p["stock"] < 10]) if not df_p.empty else 0} 項</div></div>', unsafe_allow_html=True)
-
-    st.write("<br>", unsafe_allow_html=True)
-    col_l, col_r = st.columns(2)
-    with col_l:
-        st.markdown("#### 🚚 今日物流管道分佈")
-        df_ship_today = df_ship_all[df_ship_all['pure_date'] == today] if not df_o.empty else pd.DataFrame()
-        if not df_ship_today.empty:
-            logi_stats = df_ship_today.groupby('logistics')['quantity'].sum().reset_index()
-            logi_stats.columns = ['物流方式', '件數']
-            st.dataframe(logi_stats, use_container_width=True, hide_index=True)
-        else: st.info("今日尚無物流登記數據")
-    with col_r:
-        st.markdown("#### 📉 包裹趨勢圖")
-        if not df_o.empty and not df_ship_all.empty:
-            trend_data = df_ship_all.groupby('pure_date')['quantity'].sum().reset_index().set_index('pure_date')
-            st.line_chart(trend_data, use_container_width=True)
 
 # --- TAB 1: 庫存狀態 ---
 with tabs[1]:
