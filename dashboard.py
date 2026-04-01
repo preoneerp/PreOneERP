@@ -61,21 +61,20 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據自動處理工具 (診斷版邏輯植入) ---
+# --- 3. 數據自動處理工具 ---
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
-    # 診斷版關鍵 1：強制全小寫，解決 3/31 前後欄位大小寫不一問題
+    # 修正點 1：強制轉小寫並處理空值字串化
     df.columns = [str(c).lower().strip() for c in df.columns]
     for col in df.select_dtypes(['object']).columns:
         df[col] = df[col].astype(str).str.strip().replace('nan', '')
     
-    # 診斷版關鍵 2：寬鬆尋找時間欄位
     t_col = next((c for c in df.columns if c in ['timestamp', 'time', 'created_at']), None)
     if t_col:
+        # 修正點 2：強制寬鬆解析時間，確保 3/31 前格式能讀取
         df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
         df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df['pure_date'] = df['tz_fixed'].dt.date
-    # 確保不論如何都會回傳 df
     return df
 
 # --- 4. 登入邏輯 ---
@@ -98,16 +97,17 @@ if not st.session_state["password_correct"]:
                 else: st.error("🔒 帳號或密碼不正確")
     st.stop()
 
-# --- 5. 數據抓取 (診斷版關鍵 3：分段抓取突破 1000 筆限制) ---
+# --- 5. 數據抓取 (修正點 3：翻頁抓取突破 1000 筆限制) ---
 @st.cache_data(ttl=10)
 def fetch_all_data():
     try:
+        # 分段抓取 0-3000 筆，找回被擠掉的 3/31 前舊資料
         r1 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(0, 999).execute()
         r2 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(1000, 1999).execute()
         r3 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(2000, 2999).execute()
-        combined_o = r1.data + r2.data + r3.data
+        all_orders = r1.data + r2.data + r3.data
         res_p = supabase.table("products").select("*").execute()
-        return pd.DataFrame(res_p.data), pd.DataFrame(combined_o)
+        return pd.DataFrame(res_p.data), pd.DataFrame(all_orders)
     except:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -126,7 +126,7 @@ with tabs[0]:
     st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
     target_prods = [{"name": "專注力訓練機", "search": "舒爾特專注力訓練機"},{"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},{"name": "顯微鏡相機", "search": "顯微鏡相機"},{"name": "創意卷軸畫", "search": "滾動創意卷軸畫"},{"name": "攜行盒-藍", "search": "攜行盒-藍"},{"name": "攜行盒-粉", "search": "攜行盒-粉"}]
     prod_cols = st.columns(6)
-    # 診斷版關鍵 4：過濾器加入 na=False 防呆
+    # 修正點 4：na=False 確保過濾器遇到空值不會整行報廢
     df_items_only = today_o[(today_o['mode'].str.contains("出貨", na=False)) & (~today_o['p_name'].str.contains("物流|包裹", na=False))] if not today_o.empty else pd.DataFrame()
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
@@ -138,7 +138,7 @@ with tabs[0]:
         df_ship_all = df_o[df_o['p_name'].str.contains("物流|包裹", na=False) | (df_o['mode'] == "物流統計")]
         today_total_pkgs = df_ship_all[df_ship_all['pure_date'] == today]['quantity'].sum()
         month_total_pkgs = df_ship_all[df_ship_all['pure_date'] >= this_month]['quantity'].sum()
-    else: today_total_pkgs, month_total_pkgs, df_ship_all = 0, 0, pd.DataFrame()
+    else: today_total_pkgs, month_total_pkgs = 0, 0
     m1, m2, m3, m4 = st.columns(4)
     with m1: st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{int(today_total_pkgs)} 件</div></div>', unsafe_allow_html=True)
     with m2: st.markdown(f'<div class="metric-card"><div class="metric-label">本月累計包裹</div><div class="metric-value">{int(month_total_pkgs)} 件</div></div>', unsafe_allow_html=True)
@@ -158,23 +158,34 @@ with tabs[1]:
 # --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
     if not df_o.empty:
-        dr = st.date_input("📅 日期範圍", [today - timedelta(days=60), today])
+        with st.container(border=True):
+            cc1, cc2, cc3 = st.columns(3)
+            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=60), today])
+            sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
+            sel_mode = cc3.selectbox("🔃 模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
         start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
         mask = (df_o['pure_date'] >= start_d) & (df_o['pure_date'] <= end_d)
-        # 診斷版關鍵 5：移除過於嚴格的字串過濾，改用寬鬆包含
+        # 修正點 5：使用 str.contains 排除，這比精確等於更穩定且能處理空值
         mask &= (~df_o['p_name'].str.contains("物流|包裹", na=False))
         final_o = df_o[mask].sort_values('tz_fixed', ascending=False)
-        st.dataframe(final_o[['tz_fixed', 'p_name', 'quantity', 'mode', 'platform']], use_container_width=True, hide_index=True)
+        final_o['時間'] = final_o['tz_fixed'].dt.strftime('%Y-%m-%d %H:%M')
+        st.dataframe(final_o[['時間', 'p_name', 'quantity', 'mode', 'platform', 'logistics']].rename(columns={'p_name':'商品','quantity':'數量'}), use_container_width=True, hide_index=True)
 
 # --- TAB 3: 物流件數登記 ---
 with tabs[3]:
     if not df_o.empty:
-        l_dr = st.date_input("📅 物流日期篩選", [today - timedelta(days=60), today])
+        with st.container(border=True):
+            lc1, lc2, lc3 = st.columns(3)
+            l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=60), today])
+            sel_l_plt = lc2.selectbox("平台 ", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
+            sel_l_logi = lc3.selectbox("物流 ", ["全部"] + sorted([str(x) for x in df_o['logistics'].unique() if x]))
         l_start, l_end = (l_dr[0], l_dr[1]) if len(l_dr) > 1 else (l_dr[0], l_dr[0])
         df_entry = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)].copy()
         e_mask = (df_entry['pure_date'] >= l_start) & (df_entry['pure_date'] <= l_end)
+        if sel_l_plt != "全部": e_mask &= (df_entry['platform'] == sel_l_plt)
+        if sel_l_logi != "全部": e_mask &= (df_entry['logistics'] == sel_l_logi)
         df_entry = df_entry[e_mask]
-        st.markdown(f'<div style="background:#E67E22; color:white; padding:15px; border-radius:15px; text-align:center; margin-bottom:20px"><div style="font-size:1rem">🚚 區間總包裹數</div><div style="font-size:2.5rem; font-weight:bold">{int(df_entry["quantity"].sum())} 件</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="background:#E67E22; color:white; padding:15px; border-radius:15px; text-align:center; margin-bottom:20px"><div style="font-size:1rem">🚚 篩選區間總包裹數</div><div style="font-size:2.5rem; font-weight:bold">{int(df_entry["quantity"].sum())} 件</div></div>', unsafe_allow_html=True)
         st.dataframe(df_entry[['tz_fixed', 'platform', 'logistics', 'quantity']], use_container_width=True, hide_index=True)
 
     if st.button("🔄 刷新雲端數據", use_container_width=True):
