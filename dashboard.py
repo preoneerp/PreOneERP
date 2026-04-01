@@ -38,24 +38,29 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據自動處理 (診斷版最強相容邏輯) ---
+# --- 3. 數據自動處理 (修復 KeyError 並確保舊資料顯現) ---
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
     df.columns = [str(c).lower().strip() for c in df.columns]
-    # 關鍵：強制處理所有空值，防止過濾器崩潰
     for col in df.columns:
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.strip().replace(['nan', 'None', 'None'], '')
     
+    # 強力搜尋時間欄位
     t_col = next((c for c in df.columns if c in ['timestamp', 'time', 'created_at', '作成時間']), None)
     if not t_col:
         for col in df.columns:
             if 'time' in col or 'date' in col: t_col = col; break
-
     if t_col:
         df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
         df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df['pure_date'] = df['tz_fixed'].dt.date
+    
+    # 修復點：針對截圖中的 KeyError 'vendor' 做防呆
+    if 'vendor' not in df.columns:
+        # 如果有 v_name 就改用 v_name，都沒有就給空字串
+        v_alt = next((c for c in df.columns if 'v_name' in c or '供應商' in c), None)
+        df['vendor'] = df[v_alt] if v_alt else ""
     return df
 
 # --- 4. 登入 ---
@@ -72,22 +77,25 @@ if not st.session_state["password_correct"]:
             if st.button("登入系統", use_container_width=True):
                 auth = st.secrets.get("auth", {})
                 if u in auth and str(p) == str(auth[u]["password"]):
-                    st.session_state.update({"password_correct": True, "user_level": auth[u]["level"]})
+                    st.session_state.update({"password_correct": True, "user_level": auth[u].get("level")})
                     st.rerun()
                 else: st.error("🔒 密碼不正確")
     st.stop()
 
-# --- 5. 數據抓取 (確保 3000 筆) ---
+# --- 5. 數據抓取 (保持 3000 筆翻頁讀取) ---
 @st.cache_data(ttl=10)
 def fetch_all_data():
     try:
         r1 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(0, 999).execute()
         r2 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(1000, 1999).execute()
         r3 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(2000, 2999).execute()
-        return pd.DataFrame(supabase.table("products").select("*").execute().data), pd.DataFrame(r1.data + r2.data + r3.data)
+        raw_o = r1.data + r2.data + r3.data
+        raw_p = supabase.table("products").select("*").execute().data
+        return pd.DataFrame(raw_p), pd.DataFrame(raw_o)
     except: return pd.DataFrame(), pd.DataFrame()
 
-df_p, df_o = smart_process(fetch_all_data()[0]), smart_process(fetch_all_data()[1])
+raw_p_data, raw_o_data = fetch_all_data()
+df_p, df_o = smart_process(raw_p_data), smart_process(raw_o_data)
 
 # --- 6. 主介面 ---
 tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄明細", "🚚 物流件數登記"])
@@ -103,18 +111,14 @@ with tabs[0]:
         with prod_cols[i]:
             qty = int(df_items_only[df_items_only['p_name'].str.contains(item['search'], na=False)]['quantity'].astype(float).sum()) if not df_items_only.empty else 0
             st.markdown(f'<div class="product-tag"><div class="product-name">{item["name"]}</div><div class="product-qty">{qty}<span class="product-unit">個</span></div></div>', unsafe_allow_html=True)
-    
     st.write("<br>", unsafe_allow_html=True)
     st.markdown("### 📈 營運關鍵指標")
     df_ship_all = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)] if not df_o.empty else pd.DataFrame()
     today_pkgs = df_ship_all[df_ship_all['pure_date'] == today]['quantity'].astype(float).sum() if not df_ship_all.empty else 0
-    month_pkgs = df_ship_all[df_ship_all['pure_date'] >= today.replace(day=1)]['quantity'].astype(float).sum() if not df_ship_all.empty else 0
     m1, m2, m3, m4 = st.columns(4)
     with m1: st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{int(today_pkgs)} 件</div></div>', unsafe_allow_html=True)
-    with m2: st.markdown(f'<div class="metric-card"><div class="metric-label">本月累計包裹</div><div class="metric-value">{int(month_pkgs)} 件</div></div>', unsafe_allow_html=True)
     with m3: st.markdown(f'<div class="metric-card"><div class="metric-label">今日明細筆數</div><div class="metric-value">{len(df_items_only)} 筆</div></div>', unsafe_allow_html=True)
     with m4: st.markdown(f'<div class="metric-card"><div class="metric-label">低庫存警戒</div><div class="metric-value" style="color:red">{len(df_p[df_p["stock"].astype(float) < 10]) if not df_p.empty else 0} 項</div></div>', unsafe_allow_html=True)
-    
     col_l, col_r = st.columns(2)
     with col_l:
         st.markdown("#### 🚚 今日物流管道分佈")
@@ -124,12 +128,13 @@ with tabs[0]:
         else: st.info("今日無物流數據")
     with col_r:
         st.markdown("#### 📉 包裹趨勢圖")
-        if not df_ship_all.empty:
-            st.line_chart(df_ship_all.groupby('pure_date')['quantity'].sum(), use_container_width=True)
+        if not df_ship_all.empty: st.line_chart(df_ship_all.groupby('pure_date')['quantity'].sum(), use_container_width=True)
 
 with tabs[1]:
     if not df_p.empty:
-        sel_v = st.selectbox("🔍 供應商篩選", ["✨ 全部"] + sorted(list(df_p['vendor'].unique())))
+        # 修復截圖報錯處：增加對 vendor 的防呆
+        v_list = sorted(list(df_p['vendor'].unique())) if 'vendor' in df_p.columns else [""]
+        sel_v = st.selectbox("🔍 供應商篩選", ["✨ 全部"] + v_list)
         f_df_p = df_p if sel_v == "✨ 全部" else df_p[df_p['vendor'] == sel_v]
         st.dataframe(f_df_p[['name', 'stock', 'vendor']].rename(columns={'name':'商品','stock':'在庫','vendor':'供應商'}), use_container_width=True, hide_index=True)
 
