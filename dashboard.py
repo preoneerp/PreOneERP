@@ -65,30 +65,24 @@ supabase = init_connection()
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
     df.columns = [str(c).strip().lower() for c in df.columns]
-    # 字串去空格標準化
     for col in df.select_dtypes(['object']).columns:
         df[col] = df[col].astype(str).str.strip()
     
     t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
-        # 修正：寬鬆解析時間格式
+        # 修復點：寬鬆解析，不強制 utc=True 避免舊格式崩潰
         df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce')
         
-        # 修正：相容性處理 (解決 3/31 前舊資料看不到的問題)
-        def finalize_tz(dt):
+        # 修正時區邏輯：有時區的轉台北，沒時區的視為本地時間
+        def finalize_date_logic(dt):
             if pd.isnull(dt): return dt
-            try:
-                # 若帶有時區資訊，轉台北時間並移除時區標籤以利繪圖
-                if dt.tzinfo is not None:
-                    return dt.astimezone(pytz.timezone('Asia/Taipei')).replace(tzinfo=None)
-                return dt
-            except:
-                return dt
-        
-        df['tz_fixed'] = df['tz_fixed'].apply(finalize_tz)
-        # 必須生成 pure_date 供後續所有 Tab 過濾使用
+            if dt.tzinfo is not None:
+                return dt.astimezone(pytz.timezone('Asia/Taipei')).replace(tzinfo=None)
+            return dt
+            
+        df['tz_fixed'] = df['tz_fixed'].apply(finalize_date_logic)
         df['pure_date'] = df['tz_fixed'].dt.date
-        
+    # 確保 return 縮進在 if 外層，保證回傳處理後的結果
     return df
 
 # --- 4. 登入邏輯 ---
@@ -111,12 +105,12 @@ if not st.session_state["password_correct"]:
                 else: st.error("🔒 帳號或密碼不正確")
     st.stop()
 
-# --- 5. 數據抓取 ---
+# --- 5. 數據抓取 (擴大抓取範圍以找回舊資料) ---
 @st.cache_data(ttl=10)
 def fetch_all_data():
     try:
-        # 增加上限至 20000 筆，確保歷史資料完整呈現
-        res_o = supabase.table("order_history").select("*").order("timestamp", desc=True).limit(20000).execute()
+        # 增加上限並排序 id，確保 3/31 前的歷史資料被完整載入
+        res_o = supabase.table("order_history").select("*").order("id", desc=True).limit(20000).execute()
         res_p = supabase.table("products").select("*").execute()
         return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
     except:
@@ -133,12 +127,8 @@ tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄�
 with tabs[0]:
     today = date.today()
     this_month = today.replace(day=1)
-    
-    # 過濾今日資料
-    if not df_o.empty and 'pure_date' in df_o.columns:
-        today_o = df_o[df_o['pure_date'] == today]
-    else:
-        today_o = pd.DataFrame()
+    # 確保欄位存在再執行過濾
+    today_o = df_o[df_o['pure_date'] == today] if not df_o.empty and 'pure_date' in df_o.columns else pd.DataFrame()
     
     st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
     
@@ -158,9 +148,7 @@ with tabs[0]:
     
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
-            qty = 0
-            if not df_items_only.empty:
-                qty = int(df_items_only[df_items_only['p_name'].str.contains(item['search'], na=False)]['quantity'].sum())
+            qty = int(df_items_only[df_items_only['p_name'].str.contains(item['search'], na=False)]['quantity'].sum()) if not df_items_only.empty else 0
             st.markdown(f"""
                 <div class="product-tag">
                     <div class="product-name">{item['name']}</div>
@@ -217,10 +205,10 @@ with tabs[1]:
 
 # --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
-    if not df_o.empty:
+    if not df_o.empty and 'pure_date' in df_o.columns:
         with st.container(border=True):
             cc1, cc2, cc3 = st.columns(3)
-            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=7), today])
+            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=14), today]) # 延長預設顯示至14天
             sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
             sel_mode = cc3.selectbox("🔃 模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
         start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
@@ -234,10 +222,10 @@ with tabs[2]:
 
 # --- TAB 3: 物流件數登記 ---
 with tabs[3]:
-    if not df_o.empty:
+    if not df_o.empty and 'pure_date' in df_o.columns:
         with st.container(border=True):
             lc1, lc2, lc3 = st.columns(3)
-            l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=7), today])
+            l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=14), today])
             sel_l_plt = lc2.selectbox("平台 ", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
             sel_l_logi = lc3.selectbox("物流 ", ["全部"] + sorted([str(x) for x in df_o['logistics'].unique() if x]))
         l_start, l_end = (l_dr[0], l_dr[1]) if len(l_dr) > 1 else (l_dr[0], l_dr[0])
