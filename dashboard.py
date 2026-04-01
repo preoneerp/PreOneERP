@@ -70,19 +70,12 @@ def smart_process(df):
     
     t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
-        # 修復點：寬鬆解析，不強制 utc=True 避免舊格式崩潰
-        df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce')
-        
-        # 修正時區邏輯：有時區的轉台北，沒時區的視為本地時間
-        def finalize_date_logic(dt):
-            if pd.isnull(dt): return dt
-            if dt.tzinfo is not None:
-                return dt.astimezone(pytz.timezone('Asia/Taipei')).replace(tzinfo=None)
-            return dt
-            
-        df['tz_fixed'] = df['tz_fixed'].apply(finalize_date_logic)
+        # 修正：強制轉換並自動處理時區差異
+        df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
+        # 轉回台北時間並移除時區資訊，確保舊資料(無時區)與新資料(UTC)能站在同一起跑線
+        df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        # 生成 pure_date 供全域 Tab 篩選
         df['pure_date'] = df['tz_fixed'].dt.date
-    # 確保 return 縮進在 if 外層，保證回傳處理後的結果
     return df
 
 # --- 4. 登入邏輯 ---
@@ -105,12 +98,12 @@ if not st.session_state["password_correct"]:
                 else: st.error("🔒 帳號或密碼不正確")
     st.stop()
 
-# --- 5. 數據抓取 (擴大抓取範圍以找回舊資料) ---
+# --- 5. 數據抓取 ---
 @st.cache_data(ttl=10)
 def fetch_all_data():
     try:
-        # 增加上限並排序 id，確保 3/31 前的歷史資料被完整載入
-        res_o = supabase.table("order_history").select("*").order("id", desc=True).limit(20000).execute()
+        # 深度修正：改用單一 order 條件並大幅放寬 limit，確保穿透舊資料
+        res_o = supabase.table("order_history").select("*").order("timestamp", desc=True).limit(30000).execute()
         res_p = supabase.table("products").select("*").execute()
         return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
     except:
@@ -127,7 +120,6 @@ tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄�
 with tabs[0]:
     today = date.today()
     this_month = today.replace(day=1)
-    # 確保欄位存在再執行過濾
     today_o = df_o[df_o['pure_date'] == today] if not df_o.empty and 'pure_date' in df_o.columns else pd.DataFrame()
     
     st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
@@ -142,9 +134,7 @@ with tabs[0]:
     ]
     
     prod_cols = st.columns(6)
-    df_items_only = pd.DataFrame()
-    if not today_o.empty:
-        df_items_only = today_o[(today_o['mode'].str.contains("出貨", na=False)) & (today_o['p_name'] != "物流登記")]
+    df_items_only = today_o[(today_o['mode'].str.contains("出貨", na=False)) & (today_o['p_name'] != "物流登記")] if not today_o.empty else pd.DataFrame()
     
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
@@ -208,7 +198,8 @@ with tabs[2]:
     if not df_o.empty and 'pure_date' in df_o.columns:
         with st.container(border=True):
             cc1, cc2, cc3 = st.columns(3)
-            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=14), today]) # 延長預設顯示至14天
+            # 將日期範圍預設拉長，確保歷史資料在第一眼就能看見
+            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=30), today])
             sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
             sel_mode = cc3.selectbox("🔃 模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
         start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
@@ -225,7 +216,7 @@ with tabs[3]:
     if not df_o.empty and 'pure_date' in df_o.columns:
         with st.container(border=True):
             lc1, lc2, lc3 = st.columns(3)
-            l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=14), today])
+            l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=30), today])
             sel_l_plt = lc2.selectbox("平台 ", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
             sel_l_logi = lc3.selectbox("物流 ", ["全部"] + sorted([str(x) for x in df_o['logistics'].unique() if x]))
         l_start, l_end = (l_dr[0], l_dr[1]) if len(l_dr) > 1 else (l_dr[0], l_dr[0])
