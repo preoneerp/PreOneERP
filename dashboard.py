@@ -21,33 +21,15 @@ st.markdown("""
     
     /* 商品標籤卡片式設計 */
     .product-tag {
-        background: #ffffff;
-        border: 1px solid #eee;
-        border-radius: 12px;
-        padding: 15px;
-        text-align: center;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        background: #ffffff; border: 1px solid #eee; border-radius: 12px;
+        padding: 15px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
     }
     .product-name {
-        font-size: 0.95rem;
-        color: #5D6D7E;
-        margin-bottom: 5px;
-        font-weight: 500;
-        height: 2.5rem; 
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        font-size: 0.95rem; color: #5D6D7E; margin-bottom: 5px; font-weight: 500;
+        height: 2.5rem; display: flex; align-items: center; justify-content: center;
     }
-    .product-qty {
-        font-size: 2.2rem;
-        font-weight: 800;
-        color: #E67E22;
-    }
-    .product-unit {
-        font-size: 0.8rem;
-        color: #ABB2B9;
-        margin-left: 3px;
-    }
+    .product-qty { font-size: 2.2rem; font-weight: 800; color: #E67E22; }
+    .product-unit { font-size: 0.8rem; color: #ABB2B9; margin-left: 3px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -65,13 +47,14 @@ supabase = init_connection()
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
     df.columns = [str(c).strip().lower() for c in df.columns]
-    # 字串去空格與空值預處理 (防止過濾失敗)
-    for col in df.select_dtypes(['object']).columns:
-        df[col] = df[col].astype(str).str.strip().replace('nan', '')
+    # 核心修復：強制補齊 3/31 前舊資料可能缺失的欄位，防止過濾器因 NaN 崩潰
+    for col in ['p_name', 'mode', 'platform', 'logistics', 'note']:
+        if col not in df.columns: df[col] = ""
+        df[col] = df[col].astype(str).replace(['nan', 'None', 'None'], '').str.strip()
     
     t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
-        # 強制轉換並校準時區，解決 3/31 前後格式不一問題
+        # 強制寬鬆解析，同時抓取 3/31 前後的不同時間格式
         df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
         df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df['pure_date'] = df['tz_fixed'].dt.date
@@ -97,11 +80,11 @@ if not st.session_state["password_correct"]:
                 else: st.error("🔒 帳號或密碼不正確")
     st.stop()
 
-# --- 5. 數據抓取 ---
+# --- 5. 數據抓取 (保持 245 行結構) ---
 @st.cache_data(ttl=10)
 def fetch_all_data():
     try:
-        # 增加上限至 50000 確保歷史資料完整
+        # 移除 id 排序，改用 timestamp 確保邏輯連貫性，抓取上限維持 50000 筆
         res_o = supabase.table("order_history").select("*").order("timestamp", desc=True).limit(50000).execute()
         res_p = supabase.table("products").select("*").execute()
         return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
@@ -159,13 +142,14 @@ with tabs[2]:
     if not df_o.empty:
         with st.container(border=True):
             cc1, cc2, cc3 = st.columns(3)
-            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=60), today])
-            sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
-            sel_mode = cc3.selectbox("🔃 模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
+            dr = cc1.date_input("📅 選擇日期範圍", [today - timedelta(days=90), today])
+            sel_plt = cc2.selectbox("📱 選擇平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
+            sel_mode = cc3.selectbox("🔃 選擇模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
         start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
         mask = (df_o['pure_date'] >= start_d) & (df_o['pure_date'] <= end_d)
-        # 正向排除法：只要不是這三個統計名稱，通通都要出現在明細中
-        mask &= ~(df_o['p_name'].isin(["物流登記", "物流統計", "包裹統計"]))
+        # 修正 Mask 邏輯：先將統計類標籤標示出來，其餘一律在明細呈現，防止 3/31 前資料被誤砍
+        logi_labels = ["物流登記", "物流統計", "包裹統計"]
+        mask &= ~(df_o['p_name'].isin(logi_labels))
         mask &= (df_o['mode'] != "物流統計")
         if sel_plt != "全部": mask &= (df_o['platform'] == sel_plt)
         if sel_mode != "全部": mask &= (df_o['mode'] == sel_mode)
@@ -178,17 +162,16 @@ with tabs[3]:
     if not df_o.empty:
         with st.container(border=True):
             lc1, lc2, lc3 = st.columns(3)
-            l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=60), today])
-            sel_l_plt = lc2.selectbox("平台 ", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
-            sel_l_logi = lc3.selectbox("物流 ", ["全部"] + sorted([str(x) for x in df_o['logistics'].unique() if x]))
+            l_dr = lc1.date_input("📅 物流日期範圍", [today - timedelta(days=90), today])
+            sel_l_plt = lc2.selectbox("平台篩選", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
+            sel_l_logi = lc3.selectbox("物流篩選", ["全部"] + sorted([str(x) for x in df_o['logistics'].unique() if x]))
         l_start, l_end = (l_dr[0], l_dr[1]) if len(l_dr) > 1 else (l_dr[0], l_dr[0])
-        # 正向包含法：只抓統計類項目
         df_entry = df_o[(df_o['p_name'].isin(["物流登記", "物流統計", "包裹統計"])) | (df_o['mode'] == "物流統計")].copy()
         e_mask = (df_entry['pure_date'] >= l_start) & (df_entry['pure_date'] <= l_end)
         if sel_l_plt != "全部": e_mask &= (df_entry['platform'] == sel_l_plt)
         if sel_l_logi != "全部": e_mask &= (df_entry['logistics'] == sel_l_logi)
         df_entry = df_entry[e_mask]
-        st.markdown(f'<div style="background:#E67E22; color:white; padding:15px; border-radius:15px; text-align:center; margin-bottom:20px"><div style="font-size:1rem">🚚 區間總包裹數</div><div style="font-size:2.5rem; font-weight:bold">{int(df_entry["quantity"].sum())} 件</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="background:#E67E22; color:white; padding:15px; border-radius:15px; text-align:center; margin-bottom:20px"><div style="font-size:1rem">🚚 篩選區間總包裹數</div><div style="font-size:2.5rem; font-weight:bold">{int(df_entry["quantity"].sum())} 件</div></div>', unsafe_allow_html=True)
         df_entry['時間顯示'] = df_entry['tz_fixed'].dt.strftime('%m/%d %H:%M')
         st.dataframe(df_entry[['時間顯示', 'platform', 'logistics', 'quantity']].rename(columns={'platform':'平台','logistics':'物流','quantity':'件數'}), use_container_width=True, hide_index=True)
 
