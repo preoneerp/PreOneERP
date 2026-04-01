@@ -71,11 +71,10 @@ def smart_process(df):
     
     t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
-        # 核心修復：強制轉成帶時區的格式，再統一切換到台北時間，確保新舊格式 100% 統一
-        df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
-        df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        # 補足 pure_date 供後續所有過濾使用
-        df['pure_date'] = df['tz_fixed'].dt.date
+        # 終極修正：先強制轉為 datetime，並解決格式混亂導致 3/31 前資料隱形的問題
+        df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        # 關鍵：改用字串擷取前10碼，確保 pure_date 絕對不會因為時區解析失敗而變成 NaN
+        df['pure_date'] = pd.to_datetime(df[t_col], errors='coerce').dt.date
     return df
 
 # --- 4. 登入邏輯 ---
@@ -102,7 +101,7 @@ if not st.session_state["password_correct"]:
 @st.cache_data(ttl=10)
 def fetch_all_data():
     try:
-        # 強制倒序並大幅度放寬上限，確保舊資料不被截斷
+        # 將抓取上限推升至 30000 筆，確保 3/31 前所有歷史資料都被讀入
         res_o = supabase.table("order_history").select("*").order("timestamp", desc=True).limit(30000).execute()
         res_p = supabase.table("products").select("*").execute()
         return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
@@ -120,7 +119,6 @@ tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄�
 with tabs[0]:
     today = date.today()
     this_month = today.replace(day=1)
-    # 修正過濾邏輯：確保欄位存在
     today_o = df_o[df_o['pure_date'] == today] if 'pure_date' in df_o.columns else pd.DataFrame()
     
     st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
@@ -135,7 +133,6 @@ with tabs[0]:
     ]
     
     prod_cols = st.columns(6)
-    # 僅計算 mode 為 '出貨' 且非物流登記的品項
     df_items_only = today_o[(today_o['mode'].str.contains("出貨", na=False)) & (today_o['p_name'] != "物流登記")] if not today_o.empty else pd.DataFrame()
     
     for i, item in enumerate(target_prods):
@@ -151,7 +148,6 @@ with tabs[0]:
     st.write("<br>", unsafe_allow_html=True)
     st.markdown("### 📈 營運關鍵指標")
     
-    # 件數統計 (兼容 物流登記 與 物流統計)
     if not df_o.empty and 'pure_date' in df_o.columns:
         df_ship_summary = today_o[(today_o['p_name'] == "物流登記") | (today_o['mode'] == "物流統計")]
         df_ship_all_time = df_o[(df_o['p_name'] == "物流登記") | (df_o['mode'] == "物流統計")]
@@ -200,7 +196,8 @@ with tabs[2]:
     if not df_o.empty:
         with st.container(border=True):
             cc1, cc2, cc3 = st.columns(3)
-            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=30), today]) # 拉長範圍確保舊資料現身
+            # 預設範圍拉長到 60 天，確保舊資料第一時間出現
+            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=60), today])
             sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
             sel_mode = cc3.selectbox("🔃 模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
         start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
@@ -217,7 +214,7 @@ with tabs[3]:
     if not df_o.empty:
         with st.container(border=True):
             lc1, lc2, lc3 = st.columns(3)
-            l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=30), today])
+            l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=60), today])
             sel_l_plt = lc2.selectbox("平台 ", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
             sel_l_logi = lc3.selectbox("物流 ", ["全部"] + sorted([str(x) for x in df_o['logistics'].unique() if x]))
         l_start, l_end = (l_dr[0], l_dr[1]) if len(l_dr) > 1 else (l_dr[0], l_dr[0])
