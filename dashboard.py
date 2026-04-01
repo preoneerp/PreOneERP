@@ -65,16 +65,15 @@ supabase = init_connection()
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
     df.columns = [str(c).strip().lower() for c in df.columns]
-    # 字串去空格標準化
+    # 字串去空格與空值預處理 (防止過濾失敗)
     for col in df.select_dtypes(['object']).columns:
-        df[col] = df[col].astype(str).str.strip()
+        df[col] = df[col].astype(str).str.strip().replace('nan', '')
     
     t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
-        # 強制轉換並處理時區
+        # 強制轉換並校準時區，解決 3/31 前後格式不一問題
         df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
         df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        # 確保 pure_date 即使解析失敗也能由字串切片補救
         df['pure_date'] = df['tz_fixed'].dt.date
     return df
 
@@ -102,6 +101,7 @@ if not st.session_state["password_correct"]:
 @st.cache_data(ttl=10)
 def fetch_all_data():
     try:
+        # 增加上限至 50000 確保歷史資料完整
         res_o = supabase.table("order_history").select("*").order("timestamp", desc=True).limit(50000).execute()
         res_p = supabase.table("products").select("*").execute()
         return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
@@ -123,7 +123,7 @@ with tabs[0]:
     st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
     target_prods = [{"name": "專注力訓練機", "search": "舒爾特專注力訓練機"},{"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},{"name": "顯微鏡相機", "search": "顯微鏡相機"},{"name": "創意卷軸畫", "search": "滾動創意卷軸畫"},{"name": "攜行盒-藍", "search": "攜行盒-藍"},{"name": "攜行盒-粉", "search": "攜行盒-粉"}]
     prod_cols = st.columns(6)
-    df_items_only = today_o[(today_o['mode'].str.contains("出貨", na=False)) & (today_o['p_name'] != "物流登記")] if not today_o.empty else pd.DataFrame()
+    df_items_only = today_o[(today_o['mode'].str.contains("出貨", na=False)) & (today_o['p_name'] != "物流登記") & (today_o['p_name'] != "物流統計") & (today_o['p_name'] != "包裹統計")] if not today_o.empty else pd.DataFrame()
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
             qty = int(df_items_only[df_items_only['p_name'].str.contains(item['search'], na=False)]['quantity'].sum()) if not df_items_only.empty else 0
@@ -131,8 +131,8 @@ with tabs[0]:
     st.write("<br>", unsafe_allow_html=True)
     st.markdown("### 📈 營運關鍵指標")
     if not df_o.empty and 'pure_date' in df_o.columns:
-        df_ship_summary = today_o[(today_o['p_name'] == "物流登記") | (today_o['mode'] == "物流統計") | (today_o['p_name'] == "包裹統計")]
-        df_ship_all_time = df_o[(df_o['p_name'] == "物流登記") | (df_o['mode'] == "物流統計") | (df_o['p_name'] == "包裹統計")]
+        df_ship_summary = today_o[(today_o['p_name'].isin(["物流登記", "物流統計", "包裹統計"])) | (today_o['mode'] == "物流統計")]
+        df_ship_all_time = df_o[(df_o['p_name'].isin(["物流登記", "物流統計", "包裹統計"])) | (df_o['mode'] == "物流統計")]
         today_total_pkgs = df_ship_summary['quantity'].sum()
         month_total_pkgs = df_ship_all_time[df_ship_all_time['pure_date'] >= this_month]['quantity'].sum()
     else: today_total_pkgs, month_total_pkgs, df_ship_summary, df_ship_all_time = 0, 0, pd.DataFrame(), pd.DataFrame()
@@ -159,12 +159,12 @@ with tabs[2]:
     if not df_o.empty:
         with st.container(border=True):
             cc1, cc2, cc3 = st.columns(3)
-            dr = cc1.date_input("📅 日期篩選", [today - timedelta(days=60), today])
-            sel_plt = cc2.selectbox("📱 平台篩選", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
-            sel_mode = cc3.selectbox("🔃 模式篩選", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
+            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=60), today])
+            sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
+            sel_mode = cc3.selectbox("🔃 模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
         start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
-        # 修正 Mask：排除物流統計類，其餘全部顯示 (加入 na=False 防止舊資料 NaN 導致消失)
         mask = (df_o['pure_date'] >= start_d) & (df_o['pure_date'] <= end_d)
+        # 正向排除法：只要不是這三個統計名稱，通通都要出現在明細中
         mask &= ~(df_o['p_name'].isin(["物流登記", "物流統計", "包裹統計"]))
         mask &= (df_o['mode'] != "物流統計")
         if sel_plt != "全部": mask &= (df_o['platform'] == sel_plt)
@@ -178,10 +178,11 @@ with tabs[3]:
     if not df_o.empty:
         with st.container(border=True):
             lc1, lc2, lc3 = st.columns(3)
-            l_dr = lc1.date_input("📅 物流範圍", [today - timedelta(days=60), today])
+            l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=60), today])
             sel_l_plt = lc2.selectbox("平台 ", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
             sel_l_logi = lc3.selectbox("物流 ", ["全部"] + sorted([str(x) for x in df_o['logistics'].unique() if x]))
         l_start, l_end = (l_dr[0], l_dr[1]) if len(l_dr) > 1 else (l_dr[0], l_dr[0])
+        # 正向包含法：只抓統計類項目
         df_entry = df_o[(df_o['p_name'].isin(["物流登記", "物流統計", "包裹統計"])) | (df_o['mode'] == "物流統計")].copy()
         e_mask = (df_entry['pure_date'] >= l_start) & (df_entry['pure_date'] <= l_end)
         if sel_l_plt != "全部": e_mask &= (df_entry['platform'] == sel_l_plt)
