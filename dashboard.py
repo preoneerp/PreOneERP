@@ -65,16 +65,16 @@ supabase = init_connection()
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
     df.columns = [str(c).strip().lower() for c in df.columns]
+    # 字串去空格標準化
     for col in df.select_dtypes(['object']).columns:
         df[col] = df[col].astype(str).str.strip()
     
     t_col = next((c for c in df.columns if any(k in c for k in ['timestamp', 'time', 'created_at'])), None)
     if t_col:
-        # 修正：強制轉換並自動處理時區差異
+        # 核心修復：強制轉成帶時區的格式，再統一切換到台北時間，確保新舊格式 100% 統一
         df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
-        # 轉回台北時間並移除時區資訊，確保舊資料(無時區)與新資料(UTC)能站在同一起跑線
         df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        # 生成 pure_date 供全域 Tab 篩選
+        # 補足 pure_date 供後續所有過濾使用
         df['pure_date'] = df['tz_fixed'].dt.date
     return df
 
@@ -98,11 +98,11 @@ if not st.session_state["password_correct"]:
                 else: st.error("🔒 帳號或密碼不正確")
     st.stop()
 
-# --- 5. 數據抓取 ---
+# --- 5. 數據抓取 (保持排序修正) ---
 @st.cache_data(ttl=10)
 def fetch_all_data():
     try:
-        # 深度修正：改用單一 order 條件並大幅放寬 limit，確保穿透舊資料
+        # 強制倒序並大幅度放寬上限，確保舊資料不被截斷
         res_o = supabase.table("order_history").select("*").order("timestamp", desc=True).limit(30000).execute()
         res_p = supabase.table("products").select("*").execute()
         return pd.DataFrame(res_p.data), pd.DataFrame(res_o.data)
@@ -120,7 +120,8 @@ tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄�
 with tabs[0]:
     today = date.today()
     this_month = today.replace(day=1)
-    today_o = df_o[df_o['pure_date'] == today] if not df_o.empty and 'pure_date' in df_o.columns else pd.DataFrame()
+    # 修正過濾邏輯：確保欄位存在
+    today_o = df_o[df_o['pure_date'] == today] if 'pure_date' in df_o.columns else pd.DataFrame()
     
     st.markdown(f"### 🎯 今日純出貨數量統計 ({today})")
     
@@ -134,6 +135,7 @@ with tabs[0]:
     ]
     
     prod_cols = st.columns(6)
+    # 僅計算 mode 為 '出貨' 且非物流登記的品項
     df_items_only = today_o[(today_o['mode'].str.contains("出貨", na=False)) & (today_o['p_name'] != "物流登記")] if not today_o.empty else pd.DataFrame()
     
     for i, item in enumerate(target_prods):
@@ -149,6 +151,7 @@ with tabs[0]:
     st.write("<br>", unsafe_allow_html=True)
     st.markdown("### 📈 營運關鍵指標")
     
+    # 件數統計 (兼容 物流登記 與 物流統計)
     if not df_o.empty and 'pure_date' in df_o.columns:
         df_ship_summary = today_o[(today_o['p_name'] == "物流登記") | (today_o['mode'] == "物流統計")]
         df_ship_all_time = df_o[(df_o['p_name'] == "物流登記") | (df_o['mode'] == "物流統計")]
@@ -171,8 +174,7 @@ with tabs[0]:
             logi_stats = df_ship_summary.groupby('logistics')['quantity'].sum().reset_index()
             logi_stats.columns = ['物流方式', '件數']
             st.dataframe(logi_stats, use_container_width=True, hide_index=True)
-        else:
-            st.info("今日尚無物流登記數據")
+        else: st.info("今日尚無物流登記數據")
     with col_r:
         st.markdown("#### 📉 包裹趨勢圖")
         if not df_ship_all_time.empty:
@@ -195,11 +197,10 @@ with tabs[1]:
 
 # --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
-    if not df_o.empty and 'pure_date' in df_o.columns:
+    if not df_o.empty:
         with st.container(border=True):
             cc1, cc2, cc3 = st.columns(3)
-            # 將日期範圍預設拉長，確保歷史資料在第一眼就能看見
-            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=30), today])
+            dr = cc1.date_input("📅 日期範圍", [today - timedelta(days=30), today]) # 拉長範圍確保舊資料現身
             sel_plt = cc2.selectbox("📱 平台", ["全部"] + sorted([str(x) for x in df_o['platform'].unique() if x]))
             sel_mode = cc3.selectbox("🔃 模式", ["全部"] + sorted([str(x) for x in df_o['mode'].unique() if x]))
         start_d, end_d = (dr[0], dr[1]) if len(dr) > 1 else (dr[0], dr[0])
@@ -213,7 +214,7 @@ with tabs[2]:
 
 # --- TAB 3: 物流件數登記 ---
 with tabs[3]:
-    if not df_o.empty and 'pure_date' in df_o.columns:
+    if not df_o.empty:
         with st.container(border=True):
             lc1, lc2, lc3 = st.columns(3)
             l_dr = lc1.date_input("📅 物流日期", [today - timedelta(days=30), today])
