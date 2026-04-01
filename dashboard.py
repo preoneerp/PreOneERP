@@ -97,19 +97,19 @@ if not st.session_state["password_correct"]:
                 else: st.error("🔒 帳號或密碼不正確")
     st.stop()
 
-# --- 5. 數據抓取 (關鍵修復：強制執行翻頁抓取以突破 1000 筆限制) ---
+# --- 5. 數據抓取 (深度修正版：強制合併分頁以突破 1000 筆限制) ---
 @st.cache_data(ttl=10)
 def fetch_all_data():
     try:
-        # 由於 Supabase 預設上限 1000，我們必須手動分段抓取 0-3000 筆
-        r1 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(0, 999).execute()
-        r2 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(1000, 1999).execute()
-        r3 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(2000, 2999).execute()
+        # 由於限制 1000，我們必須分次抓取並合併，確保 3/31 前的資料被抓到
+        p1 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(0, 999).execute()
+        p2 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(1000, 1999).execute()
+        p3 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(2000, 2999).execute()
+        p4 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(3000, 3999).execute()
         
-        # 合併三組數據，確保舊資料(3/31前)能被抓回來
-        all_order_data = r1.data + r2.data + r3.data
+        all_data = p1.data + p2.data + p3.data + p4.data
         res_p = supabase.table("products").select("*").execute()
-        return pd.DataFrame(res_p.data), pd.DataFrame(all_order_data)
+        return pd.DataFrame(res_p.data), pd.DataFrame(all_data)
     except:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -138,7 +138,7 @@ with tabs[0]:
     ]
     
     prod_cols = st.columns(6)
-    # 僅計算模式為出貨且排除物流登記的項
+    # 僅計算 mode 為 '出貨' 且非物流登記的品項
     df_items_only = today_o[(today_o['mode'].str.contains("出貨", na=False)) & (~today_o['p_name'].str.contains("物流|包裹", na=False))] if not today_o.empty else pd.DataFrame()
     
     for i, item in enumerate(target_prods):
