@@ -37,32 +37,35 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據預處理 (解決 3/31 前 None 的核心邏輯) ---
+# --- 3. 數據處理 (解決 KeyError: 'vendor' 的核心修復) ---
 def smart_process(df):
     if df is None or df.empty: return pd.DataFrame()
+    # 1. 統一將所有欄位轉為小寫並去除空格
     df.columns = [str(c).lower().strip() for c in df.columns]
     
-    # 彈性時間解析
-    if 'timestamp' in df.columns:
-        # 第一步：嘗試標準轉換
-        df['tz_fixed'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
-        # 第二步：如果還有 None (NaT)，嘗試不指定時區的轉換 (處理地端舊格式)
-        mask_nat = df['tz_fixed'].isna()
-        if mask_nat.any():
-            df.loc[mask_nat, 'tz_fixed'] = pd.to_datetime(df.loc[mask_nat, 'timestamp'], errors='coerce')
-        
-        # 統一轉為台北時間並提取日期
-        df['tz_fixed'] = df['tz_fixed'].dt.tz_localize(None) # 移除時區屬性以便比較
+    # 2. 時間解析防呆
+    t_col = next((c for c in df.columns if c in ['timestamp', 'created_at', '作成時間']), None)
+    if t_col:
+        df['tz_fixed'] = pd.to_datetime(df[t_col], errors='coerce', utc=True)
+        df['tz_fixed'] = df['tz_fixed'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df['pure_date'] = df['tz_fixed'].dt.date
     
-    # 字串補位與數值轉換
+    # 3. 欄位補位防呆 (解決 KeyError)
+    # 如果找不到 vendor，找尋包含 "供應" 或 "v_name" 的欄位當作替代
+    if 'vendor' not in df.columns:
+        alt_v = next((c for c in df.columns if '供應' in c or 'v_name' in c or 'vendor' in c), None)
+        df['vendor'] = df[alt_v] if alt_v else "-"
+    
+    # 4. 填充空值與型別轉換
     for col in ['p_name', 'mode', 'platform', 'logistics', 'vendor']:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip().replace(['nan', 'None', ''], '-')
+            
     if 'quantity' in df.columns:
         df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0)
     if 'stock' in df.columns:
         df['stock'] = pd.to_numeric(df['stock'], errors='coerce').fillna(0)
+        
     return df
 
 # --- 4. 登入 ---
@@ -84,14 +87,15 @@ if not st.session_state["password_correct"]:
                 else: st.error("🔒 密碼錯誤")
     st.stop()
 
-# --- 5. 數據抓取 (保持 3000 筆分段) ---
+# --- 5. 數據抓取 (3000 筆分段) ---
 @st.cache_data(ttl=5)
 def fetch_all_data():
     try:
         r1 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(0, 999).execute()
         r2 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(1000, 1999).execute()
         r3 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(2000, 2999).execute()
-        return pd.DataFrame(supabase.table("products").select("*").execute().data), pd.DataFrame(r1.data + r2.data + r3.data)
+        raw_p = supabase.table("products").select("*").execute().data
+        return pd.DataFrame(raw_p), pd.DataFrame(r1.data + r2.data + r3.data)
     except: return pd.DataFrame(), pd.DataFrame()
 
 df_p_raw, df_o_raw = fetch_all_data()
@@ -107,6 +111,7 @@ with tabs[0]:
     st.markdown(f"### 🎯 今日統計 ({today})")
     target_prods = [{"name": "專注力訓練機", "search": "舒爾特專注力訓練機"},{"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},{"name": "顯微鏡相機", "search": "顯微鏡相機"},{"name": "創意卷軸畫", "search": "滾動創意卷軸畫"},{"name": "攜行盒-藍", "search": "攜行盒-藍"},{"name": "攜行盒-粉", "search": "攜行盒-粉"}]
     prod_cols = st.columns(6)
+    
     df_items_only = today_o[~today_o['p_name'].str.contains("物流|包裹", na=False)] if not today_o.empty else pd.DataFrame()
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
@@ -123,26 +128,27 @@ with tabs[0]:
 
 with tabs[1]:
     if not df_p.empty:
-        sel_v = st.selectbox("🔍 供應商篩選", ["✨ 全部"] + sorted(list(df_p['vendor'].unique())))
+        # 再次防呆
+        v_list = sorted(list(df_p['vendor'].unique())) if 'vendor' in df_p.columns else ["-"]
+        sel_v = st.selectbox("🔍 供應商篩選", ["✨ 全部"] + v_list)
         f_df_p = df_p if sel_v == "✨ 全部" else df_p[df_p['vendor'] == sel_v]
-        st.dataframe(f_df_p[['name', 'stock', 'vendor']], use_container_width=True, hide_index=True)
+        st.dataframe(f_df_p[['name', 'stock', 'vendor']].rename(columns={'name':'商品','stock':'在庫','vendor':'供應商'}), use_container_width=True, hide_index=True)
 
 with tabs[2]:
     if not df_o.empty:
         dr = st.date_input("📅 日期範圍", [date(2026, 3, 1), today])
         if len(dr) == 2:
-            # 關鍵修正：fillna(date.min) 讓 None 也能通過篩選被看見
             mask = (df_o['pure_date'].fillna(date(2000,1,1)) >= dr[0]) & (df_o['pure_date'].fillna(date(2099,12,31)) <= dr[1])
             mask &= (~df_o['p_name'].str.contains("物流|包裹", na=False))
             st.dataframe(df_o[mask].sort_values('tz_fixed', ascending=False)[['tz_fixed', 'p_name', 'quantity', 'mode', 'platform', 'logistics']], use_container_width=True, hide_index=True)
 
 with tabs[3]:
     if not df_o.empty:
-        l_dr = st.date_input("📅 物流查詢日期", [date(2026, 3, 1), today])
+        l_dr = st.date_input("📅 物流查詢", [date(2026, 3, 1), today])
         if len(l_dr) == 2:
             df_entry = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)]
             e_mask = (df_entry['pure_date'].fillna(date(2000,1,1)) >= l_dr[0]) & (df_entry['pure_date'].fillna(date(2099,12,31)) <= l_dr[1])
             st.markdown(f'<div style="background:#E67E22; color:white; padding:15px; border-radius:15px; text-align:center; margin-bottom:20px">總計: {int(df_entry[e_mask]["quantity"].sum())} 件</div>', unsafe_allow_html=True)
             st.dataframe(df_entry[e_mask][['tz_fixed', 'platform', 'logistics', 'quantity']], use_container_width=True, hide_index=True)
 
-    if st.button("🔄 刷新數據", use_container_width=True): st.cache_data.clear(); st.rerun()
+    if st.button("🔄 刷新雲端數據", use_container_width=True): st.cache_data.clear(); st.rerun()
