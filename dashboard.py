@@ -4,7 +4,7 @@ from supabase import create_client
 from datetime import datetime, date, timedelta
 
 # --- 1. 頁面配置與視覺設計 ---
-st.set_page_config(page_title="培玩雲端 ERP WEB V0407.8", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="培玩雲端 ERP WEB V0407.9", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
@@ -42,38 +42,39 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據預處理 (V0407.8：強制欄位保底) ---
+# --- 3. 數據預處理 (V0407.9：徹底解決欄位重複問題) ---
 def process_data(df, is_order=True):
     if df is None or df.empty: return pd.DataFrame()
+    
+    # 1. 基礎清理
     df.columns = [str(c).lower().strip() for c in df.columns]
     
-    # 模糊對齊
+    # 2. 模糊對齊
     r_map = {}
     for c in df.columns:
         if any(x in c for x in ['p_name', 'product', '品名', '商品', 'name']): r_map[c] = 'p_name'
-        if any(x in c for x in ['qty', 'quantity', '數量', '件數', 'stock']): r_map[c] = 'quantity'
-        if any(x in c for x in ['timestamp', 'time', 'created']): r_map[c] = 'timestamp'
-        if any(x in c for x in ['vendor', '供應']): r_map[c] = 'vendor'
+        elif any(x in c for x in ['qty', 'quantity', '數量', '件數', 'stock']): r_map[c] = 'quantity'
+        elif any(x in c for x in ['timestamp', 'time', 'created']): r_map[c] = 'timestamp'
+        elif any(x in c for x in ['vendor', '供應']): r_map[c] = 'vendor'
+    
+    # 3. 執行重命名並「去重」
     df = df.rename(columns=r_map)
-
-    # 強制檢查必要欄位，若遺失則注入空欄位 (防止 KeyError)
+    df = df.loc[:, ~df.columns.duplicated()].copy() # 核心修復：只保留第一個重複的欄位
+    
+    # 4. 強制保底必要欄位
     needed = ['p_name', 'quantity', 'vendor']
     if is_order: needed += ['timestamp', 'platform', 'mode', 'logistics']
-    
     for col in needed:
-        if col not in df.columns:
-            df[col] = "-"
+        if col not in df.columns: df[col] = "-"
 
-    # 訂單表特有邏輯
-    if is_order:
+    # 5. 時間與數值處理
+    if is_order and 'timestamp' in df.columns:
         ts_raw = df['timestamp'].astype(str).str.replace('T', ' ').str.replace('Z', '')
         df['date_str'] = ts_raw.str[:10]
         df['display_time'] = ts_raw.str[:16]
         df['dt_sort'] = pd.to_datetime(df['timestamp'], errors='coerce')
     
-    # 數量轉數值保底
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0)
-        
     return df
 
 # --- 4. 數據抓取 ---
@@ -97,7 +98,7 @@ tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄�
 # --- TAB 0: 數據總覽 ---
 with tabs[0]:
     t_str = date.today().strftime("%Y-%m-%d")
-    today_o = df_o[df_o['date_str'] == t_str] if not df_o.empty else pd.DataFrame(columns=df_o.columns)
+    today_o = df_o[df_o['date_str'] == t_str] if not df_o.empty and 'date_str' in df_o.columns else pd.DataFrame(columns=df_o.columns)
     st.markdown(f"### 🎯 今日營運概況 ({t_str})")
     
     prods = [{"name": "專注力訓練機", "s": "專注力訓練機"},{"name": "24點數感大作戰", "s": "24點數感"},{"name": "顯微鏡相機", "s": "顯微鏡相機"},{"name": "創意卷軸畫", "s": "卷軸畫"},{"name": "攜行盒-藍", "s": "攜行盒-藍"},{"name": "攜行盒-粉", "s": "攜行盒-粉"}]
@@ -122,7 +123,7 @@ with tabs[0]:
         m2.markdown(f'<div class="metric-card"><div class="metric-label">今日明細筆數</div><div class="metric-value">{len(df_items)} 筆</div></div>', unsafe_allow_html=True)
         low_s = len(df_p[df_p['quantity'] < 10]) if not df_p.empty else 0
         m3.markdown(f'<div class="metric-card"><div class="metric-label">庫存警戒項目</div><div class="metric-value" style="color:red">{low_s} 項</div></div>', unsafe_allow_html=True)
-        m4.markdown(f'<div class="metric-card"><div class="metric-label">系統版本</div><div class="metric-value" style="font-size:1.1rem; color:#27AE60;">V0407.8 穩定版</div></div>', unsafe_allow_html=True)
+        m4.markdown(f'<div class="metric-card"><div class="metric-label">系統版本</div><div class="metric-value" style="font-size:1.1rem; color:#27AE60;">V0407.9 已修復</div></div>', unsafe_allow_html=True)
 
     with col_logi:
         st.markdown("#### 🚚 當日物流統計")
@@ -132,15 +133,16 @@ with tabs[0]:
             st.dataframe(logi_sum.rename(columns={'logistics':'渠道','quantity':'件數'}), use_container_width=True, hide_index=True)
         else: st.info("今日尚無物流登記數據")
 
-# --- TAB 1: 庫存狀態 (修復 KeyError 點) ---
+# --- TAB 1: 庫存狀態 ---
 with tabs[1]:
     st.markdown("### ☁️ 現有庫存清單")
     if not df_p.empty:
-        # 增加保底檢查
         v_list = ["全部供應商"] + sorted(list(df_p['vendor'].astype(str).unique()))
         sel_v = st.selectbox("🔍 依供應商篩選", v_list)
         f_p = df_p if sel_v == "全部供應商" else df_p[df_p['vendor'] == sel_v]
-        st.dataframe(f_p.rename(columns={'p_name':'商品名稱','quantity':'在庫數量','vendor':'供應商'}), use_container_width=True, hide_index=True)
+        # 修復 KeyError 關鍵：先選擇需要的欄位再 rename
+        view_p = f_p[['p_name', 'quantity', 'vendor']].rename(columns={'p_name':'商品名稱','quantity':'在庫數量','vendor':'供應商'})
+        st.dataframe(view_p, use_container_width=True, hide_index=True)
 
 # --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
