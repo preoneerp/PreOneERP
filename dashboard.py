@@ -2,17 +2,15 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client
 
-st.set_page_config(page_title="排查 1：基礎抓取", layout="wide")
+st.set_page_config(page_title="排查 2：時間對齊")
 supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
-@st.cache_data(ttl=5)
-def fetch_data():
-    # 測試是否能穿透 1000 筆
-    r1 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(0, 999).execute()
-    r2 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(1000, 1999).execute()
-    r3 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(2000, 2999).execute()
-    return pd.DataFrame(r1.data + r2.data + r3.data)
+df = pd.DataFrame(supabase.table("order_history").select("*").order("timestamp", desc=True).range(0, 2000).execute().data)
 
-df = fetch_data()
-st.write(f"當前抓取總筆數：{len(df)}")
-st.dataframe(df) # 檢查這裡是否有 3/31 以前的資料
+# 測試這段邏輯是否殺掉舊資料
+df.columns = [str(c).lower().strip() for c in df.columns]
+df['tz_fixed'] = pd.to_datetime(df['timestamp'], errors='coerce') # coerce 很重要
+df['pure_date'] = df['tz_fixed'].dt.date
+
+st.write("時間轉換後的資料：")
+st.dataframe(df[['timestamp', 'pure_date']]) # 檢查 pure_date 是否有出現舊日期
