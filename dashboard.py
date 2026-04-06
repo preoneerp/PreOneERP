@@ -4,7 +4,7 @@ from supabase import create_client
 from datetime import datetime, date, timedelta
 
 # --- 1. 頁面配置與視覺設計 (維持 V0407.4 原版) ---
-st.set_page_config(page_title="培玩雲端 ERP WEB V0407.41", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="培玩雲端 ERP WEB V0407.13", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
@@ -125,7 +125,7 @@ with tabs[0]:
         stock_col = next((c for c in df_p_tab0.columns if any(k in c for k in ['stock','庫存','在庫','qty'])), df_p_tab0.columns[1])
         low_stock = len(df_p_tab0[pd.to_numeric(df_p_tab0[stock_col], errors='coerce') < 10])
         m3.markdown(f'<div class="metric-card"><div class="metric-label">庫存警戒項目</div><div class="metric-value" style="color:red">{low_stock} 項</div></div>', unsafe_allow_html=True)
-        m4.markdown(f'<div class="metric-card"><div class="metric-label">更新狀態</div><div class="metric-value" style="font-size:1.1rem; color:#27AE60;">V0407.41 已優化</div></div>', unsafe_allow_html=True)
+        m4.markdown(f'<div class="metric-card"><div class="metric-label"></div></div>', unsafe_allow_html=True)
 
     with col_logi:
         st.markdown("#### 🚚 當日物流分佈")
