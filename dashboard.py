@@ -37,40 +37,46 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據預處理 (結構鎖定邏輯：徹底解決 KeyError) ---
-def smart_process(df):
-    # 定義標準欄位模板
-    std_cols = ['p_name', 'quantity', 'timestamp', 'platform', 'mode', 'logistics', 'vendor']
-    
-    if df is None or df.empty: 
-        return pd.DataFrame(columns=std_cols + ['date_str', 'dt_sort'])
-    
-    # 1. 強制全部小寫化
+# --- 3. 數據預處理 ---
+def process_orders(df):
+    std_cols = ['p_name', 'quantity', 'timestamp', 'platform', 'mode', 'logistics']
+    if df is None or df.empty: return pd.DataFrame(columns=std_cols + ['date_str', 'dt_sort'])
     df.columns = [str(c).lower().strip() for c in df.columns]
     
-    # 2. 模糊欄位重定向
-    rename_map = {}
-    for col in df.columns:
-        if any(x in col for x in ['p_name', 'product', '品名', '商品']): rename_map[col] = 'p_name'
-        if any(x in col for x in ['qty', 'quantity', '數量', '件數']): rename_map[col] = 'quantity'
-        if any(x in col for x in ['timestamp', 'time', 'created', '時間']): rename_map[col] = 'timestamp'
-    df = df.rename(columns=rename_map)
+    # 模糊對齊
+    r_map = {}
+    for c in df.columns:
+        if any(x in c for x in ['p_name', 'product', '品名', '商品']): r_map[c] = 'p_name'
+        if any(x in c for x in ['qty', 'quantity', '數量', '件數']): r_map[c] = 'quantity'
+        if any(x in c for x in ['timestamp', 'time', 'created']): r_map[c] = 'timestamp'
+    df = df.rename(columns=r_map)
     
-    # 3. 結構鎖定：補齊缺失欄位並給予預設值
     for m in std_cols:
         if m not in df.columns: df[m] = "-"
     
-    # 4. 處理時間 (字串切片法)
     df['date_str'] = df['timestamp'].astype(str).str[:10]
     df['dt_sort'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    
-    # 5. 清理空值與型別
-    df['p_name'] = df['p_name'].astype(str).str.strip().replace(['nan', 'None', ''], '-')
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0)
-    
-    return df[std_cols + ['date_str', 'dt_sort']]
+    return df
 
-# --- 4. 登入 ---
+def process_products(df):
+    # 商品表專用結構
+    if df is None or df.empty: return pd.DataFrame(columns=['name', 'stock', 'vendor'])
+    df.columns = [str(c).lower().strip() for c in df.columns]
+    
+    # 對齊商品欄位
+    r_map = {}
+    for c in df.columns:
+        if any(x in c for x in ['name', 'product', '品名']): r_map[c] = 'name'
+        if any(x in c for x in ['stock', '庫存', '在庫']): r_map[c] = 'stock'
+        if any(x in c for x in ['vendor', '供應']): r_map[c] = 'vendor'
+    df = df.rename(columns=r_map)
+    
+    if 'stock' in df.columns:
+        df['stock'] = pd.to_numeric(df['stock'], errors='coerce').fillna(0)
+    return df
+
+# --- 4. 登入系統 ---
 if "password_correct" not in st.session_state:
     st.session_state["password_correct"] = False
 
@@ -78,10 +84,10 @@ if not st.session_state["password_correct"]:
     _, col_mid, _ = st.columns([1.2, 1, 1.2])
     with col_mid:
         st.write("<br><br>", unsafe_allow_html=True)
-        st.markdown("<h2 style='text-align: center; color: #E8A0BF;'>🎀 雲端管理系統</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center; color: #E8A0BF;'>🎀 培玩雲端管理</h2>", unsafe_allow_html=True)
         with st.container(border=True):
             u = st.text_input("帳號"); p = st.text_input("密碼", type="password")
-            if st.button("登入系統", use_container_width=True):
+            if st.button("進入系統", use_container_width=True):
                 auth = st.secrets.get("auth", {})
                 if u in auth and str(p) == str(auth[u]["password"]):
                     st.session_state.update({"password_correct": True})
@@ -91,65 +97,66 @@ if not st.session_state["password_correct"]:
 
 # --- 5. 數據抓取 ---
 @st.cache_data(ttl=5)
-def fetch_all_data():
+def fetch_data():
     try:
         r1 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(0, 999).execute()
         r2 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(1000, 1999).execute()
         r3 = supabase.table("order_history").select("*").order("timestamp", desc=True).range(2000, 2999).execute()
-        raw_o = r1.data + r2.data + r3.data
         raw_p = supabase.table("products").select("*").execute().data
-        return pd.DataFrame(raw_p), pd.DataFrame(raw_o)
+        return pd.DataFrame(raw_p), pd.DataFrame(r1.data + r2.data + r3.data)
     except: return pd.DataFrame(), pd.DataFrame()
 
-df_p_raw, df_o_raw = fetch_all_data()
-df_p, df_o = smart_process(df_p_raw), smart_process(df_o_raw)
+df_p_raw, df_o_raw = fetch_data()
+df_p = process_products(df_p_raw)
+df_o = process_orders(df_o_raw)
 
 # --- 6. 主介面 ---
 tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄明細", "🚚 物流件數登記"])
 
 with tabs[0]:
-    today_str = date.today().strftime("%Y-%m-%d")
-    today_o = df_o[df_o['date_str'] == today_str] if not df_o.empty else pd.DataFrame(columns=df_o.columns)
-    st.markdown(f"### 🎯 今日統計 ({today_str})")
+    today_s = date.today().strftime("%Y-%m-%d")
+    today_o = df_o[df_o['date_str'] == today_s] if not df_o.empty else pd.DataFrame(columns=df_o.columns)
+    st.markdown(f"### 🎯 今日統計 ({today_s})")
     
-    target_prods = [{"name": "專注力訓練機", "search": "舒爾特專注力訓練機"},{"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},{"name": "顯微鏡相機", "search": "顯微鏡相機"},{"name": "創意卷軸畫", "search": "滾動創意卷軸畫"},{"name": "攜行盒-藍", "search": "攜行盒-藍"},{"name": "攜行盒-粉", "search": "攜行盒-粉"}]
-    prod_cols = st.columns(6)
+    prods = [{"name": "專注力訓練機", "s": "舒爾特專注力訓練機"},{"name": "24點數感大作戰", "s": "24點數感邏輯大作戰"},{"name": "顯微鏡相機", "s": "顯微鏡相機"},{"name": "創意卷軸畫", "s": "滾動創意卷軸畫"},{"name": "攜行盒-藍", "s": "攜行盒-藍"},{"name": "攜行盒-粉", "s": "攜行盒-粉"}]
+    p_cols = st.columns(6)
     
-    df_items_only = today_o[~today_o['p_name'].str.contains("物流|包裹", na=False)] if not today_o.empty else pd.DataFrame(columns=df_o.columns)
-    for i, item in enumerate(target_prods):
-        with prod_cols[i]:
-            qty = 0
-            if not df_items_only.empty:
-                match_df = df_items_only[df_items_only['p_name'].str.contains(item['search'], na=False)]
-                qty = int(match_df['quantity'].sum())
+    df_items = today_o[~today_o['p_name'].str.contains("物流|包裹", na=False)] if not today_o.empty else pd.DataFrame(columns=df_o.columns)
+    for i, item in enumerate(prods):
+        with p_cols[i]:
+            qty = int(df_items[df_items['p_name'].str.contains(item['s'], na=False)]['quantity'].sum()) if not df_items.empty else 0
             st.markdown(f'<div class="product-tag"><div class="product-name">{item["name"]}</div><div class="product-qty">{qty}<span class="product-unit">個</span></div></div>', unsafe_allow_html=True)
     
     st.write("<br>", unsafe_allow_html=True)
-    df_ship_all = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)] if not df_o.empty else pd.DataFrame(columns=df_o.columns)
-    m1, m2, m3, m4 = st.columns(4)
+    df_ship = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)]
+    m1, m2, m3 = st.columns(3)
     with m1:
-        t_pkg = int(df_ship_all[df_ship_all["date_str"]==today_str]["quantity"].sum()) if not df_ship_all.empty else 0
-        st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{t_pkg} 件</div></div>', unsafe_allow_html=True)
-    with m2: st.metric("總載入筆數", f"{len(df_o)} 筆")
-    with m3: st.markdown(f'<div class="metric-card"><div class="metric-label">今日明細筆數</div><div class="metric-value">{len(df_items_only)} 筆</div></div>', unsafe_allow_html=True)
-    with m4: st.markdown(f'<div class="metric-card"><div class="metric-label">庫存監控項數</div><div class="metric-value">{len(df_p)} 項</div></div>', unsafe_allow_html=True)
+        pkg = int(df_ship[df_ship["date_str"]==today_s]["quantity"].sum()) if not df_ship.empty else 0
+        st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{pkg} 件</div></div>', unsafe_allow_html=True)
+    with m2:
+        st.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單筆數</div><div class="metric-value">{len(df_items)} 筆</div></div>', unsafe_allow_html=True)
+    with m3:
+        low_stock = len(df_p[df_p['stock'] < 10]) if not df_p.empty else 0
+        st.markdown(f'<div class="metric-card"><div class="metric-label">庫存低於10件</div><div class="metric-value" style="color:red">{low_stock} 項</div></div>', unsafe_allow_html=True)
 
 with tabs[1]:
+    st.markdown("### ☁️ 現有庫存清單")
     if not df_p.empty:
-        st.dataframe(df_p[['p_name', 'quantity', 'vendor']].rename(columns={'p_name':'商品','quantity':'在庫','vendor':'供應商'}), use_container_width=True, hide_index=True)
+        # 強制呈現核心三欄位
+        view_p = df_p[['name', 'stock', 'vendor']].copy()
+        view_p.columns = ['商品名稱', '在庫數量', '供應商']
+        st.dataframe(view_p, use_container_width=True, hide_index=True)
 
 with tabs[2]:
-    if not df_o.empty:
-        dr = st.date_input("📅 選擇日期區間", [date(2026, 3, 2), date.today()])
+    dr = st.date_input("📅 選擇日期範圍", [date(2026, 3, 2), date.today()])
+    if not df_o.empty and len(dr) == 2:
         mask = (~df_o['p_name'].str.contains("物流|包裹", na=False))
-        if len(dr) == 2:
-            s_s, e_s = dr[0].strftime("%Y-%m-%d"), dr[1].strftime("%Y-%m-%d")
-            mask &= (df_o['date_str'] >= s_s) & (df_o['date_str'] <= e_s)
+        mask &= (df_o['date_str'] >= dr[0].strftime("%Y-%m-%d")) & (df_o['date_str'] <= dr[1].strftime("%Y-%m-%d"))
         st.dataframe(df_o[mask].sort_values('dt_sort', ascending=False)[['timestamp', 'p_name', 'quantity', 'mode', 'platform']], use_container_width=True, hide_index=True)
 
 with tabs[3]:
-    if not df_o.empty:
-        df_entry = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)]
-        st.dataframe(df_entry[['timestamp', 'platform', 'logistics', 'quantity']], use_container_width=True, hide_index=True)
+    df_entry = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)]
+    if not df_entry.empty:
+        st.dataframe(df_entry.sort_values('dt_sort', ascending=False)[['timestamp', 'platform', 'logistics', 'quantity']], use_container_width=True, hide_index=True)
 
-    if st.button("🔄 刷新數據", use_container_width=True): st.cache_data.clear(); st.rerun()
+    if st.button("🔄 刷新雲端數據", use_container_width=True): st.cache_data.clear(); st.rerun()
