@@ -37,36 +37,38 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據預處理 (字串首位偵測 + 模糊欄位對齊) ---
+# --- 3. 數據預處理 (結構鎖定邏輯：徹底解決 KeyError) ---
 def smart_process(df):
-    if df is None or df.empty: return pd.DataFrame()
+    # 定義標準欄位模板
+    std_cols = ['p_name', 'quantity', 'timestamp', 'platform', 'mode', 'logistics', 'vendor']
+    
+    if df is None or df.empty: 
+        return pd.DataFrame(columns=std_cols + ['date_str', 'dt_sort'])
     
     # 1. 強制全部小寫化
     df.columns = [str(c).lower().strip() for c in df.columns]
     
-    # 2. 模糊欄位校正 (解決 KeyError)
+    # 2. 模糊欄位重定向
     rename_map = {}
     for col in df.columns:
         if any(x in col for x in ['p_name', 'product', '品名', '商品']): rename_map[col] = 'p_name'
         if any(x in col for x in ['qty', 'quantity', '數量', '件數']): rename_map[col] = 'quantity'
         if any(x in col for x in ['timestamp', 'time', 'created', '時間']): rename_map[col] = 'timestamp'
-        if any(x in col for x in ['logistics', '物流']): rename_map[col] = 'logistics'
-        if any(x in col for x in ['platform', '平台']): rename_map[col] = 'platform'
-        if any(x in col for x in ['mode', '模式']): rename_map[col] = 'mode'
-        if any(x in col for x in ['vendor', '供應']): rename_map[col] = 'vendor'
-    
     df = df.rename(columns=rename_map)
     
-    # 3. 補齊絕對必要的欄位，防止程式報錯
-    for m in ['p_name', 'quantity', 'timestamp', 'platform', 'mode', 'logistics', 'vendor']:
+    # 3. 結構鎖定：補齊缺失欄位並給予預設值
+    for m in std_cols:
         if m not in df.columns: df[m] = "-"
-
-    # 4. 處理時間字串 (字串切片法)
-    df['timestamp_str'] = df['timestamp'].astype(str)
-    df['date_str'] = df['timestamp_str'].str[:10]
+    
+    # 4. 處理時間 (字串切片法)
+    df['date_str'] = df['timestamp'].astype(str).str[:10]
     df['dt_sort'] = pd.to_datetime(df['timestamp'], errors='coerce')
     
-    return df
+    # 5. 清理空值與型別
+    df['p_name'] = df['p_name'].astype(str).str.strip().replace(['nan', 'None', ''], '-')
+    df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0)
+    
+    return df[std_cols + ['date_str', 'dt_sort']]
 
 # --- 4. 登入 ---
 if "password_correct" not in st.session_state:
@@ -107,38 +109,42 @@ tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄�
 
 with tabs[0]:
     today_str = date.today().strftime("%Y-%m-%d")
-    today_o = df_o[df_o['date_str'] == today_str] if not df_o.empty else pd.DataFrame()
+    today_o = df_o[df_o['date_str'] == today_str] if not df_o.empty else pd.DataFrame(columns=df_o.columns)
     st.markdown(f"### 🎯 今日統計 ({today_str})")
     
     target_prods = [{"name": "專注力訓練機", "search": "舒爾特專注力訓練機"},{"name": "24點數感大作戰", "search": "24點數感邏輯大作戰"},{"name": "顯微鏡相機", "search": "顯微鏡相機"},{"name": "創意卷軸畫", "search": "滾動創意卷軸畫"},{"name": "攜行盒-藍", "search": "攜行盒-藍"},{"name": "攜行盒-粉", "search": "攜行盒-粉"}]
     prod_cols = st.columns(6)
     
-    df_items_only = today_o[~today_o['p_name'].str.contains("物流|包裹", na=False)] if not today_o.empty else pd.DataFrame()
+    df_items_only = today_o[~today_o['p_name'].str.contains("物流|包裹", na=False)] if not today_o.empty else pd.DataFrame(columns=df_o.columns)
     for i, item in enumerate(target_prods):
         with prod_cols[i]:
-            qty = int(pd.to_numeric(df_items_only[df_items_only['p_name'].str.contains(item['search'], na=False)]['quantity'], errors='coerce').sum())
+            qty = 0
+            if not df_items_only.empty:
+                match_df = df_items_only[df_items_only['p_name'].str.contains(item['search'], na=False)]
+                qty = int(match_df['quantity'].sum())
             st.markdown(f'<div class="product-tag"><div class="product-name">{item["name"]}</div><div class="product-qty">{qty}<span class="product-unit">個</span></div></div>', unsafe_allow_html=True)
     
     st.write("<br>", unsafe_allow_html=True)
-    df_ship_all = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)]
+    df_ship_all = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)] if not df_o.empty else pd.DataFrame(columns=df_o.columns)
     m1, m2, m3, m4 = st.columns(4)
-    with m1: st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{int(pd.to_numeric(df_ship_all[df_ship_all["date_str"]==today_str]["quantity"], errors="coerce").sum())} 件</div></div>', unsafe_allow_html=True)
-    with m2: st.metric("資料載入總量", f"{len(df_o)} 筆")
+    with m1:
+        t_pkg = int(df_ship_all[df_ship_all["date_str"]==today_str]["quantity"].sum()) if not df_ship_all.empty else 0
+        st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{t_pkg} 件</div></div>', unsafe_allow_html=True)
+    with m2: st.metric("總載入筆數", f"{len(df_o)} 筆")
     with m3: st.markdown(f'<div class="metric-card"><div class="metric-label">今日明細筆數</div><div class="metric-value">{len(df_items_only)} 筆</div></div>', unsafe_allow_html=True)
-    with m4: st.markdown(f'<div class="metric-card"><div class="metric-label">在庫商品數</div><div class="metric-value">{len(df_p)} 項</div></div>', unsafe_allow_html=True)
+    with m4: st.markdown(f'<div class="metric-card"><div class="metric-label">庫存監控項數</div><div class="metric-value">{len(df_p)} 項</div></div>', unsafe_allow_html=True)
 
 with tabs[1]:
     if not df_p.empty:
-        st.dataframe(df_p[['name', 'stock', 'vendor']], use_container_width=True, hide_index=True)
+        st.dataframe(df_p[['p_name', 'quantity', 'vendor']].rename(columns={'p_name':'商品','quantity':'在庫','vendor':'供應商'}), use_container_width=True, hide_index=True)
 
 with tabs[2]:
     if not df_o.empty:
         dr = st.date_input("📅 選擇日期區間", [date(2026, 3, 2), date.today()])
         mask = (~df_o['p_name'].str.contains("物流|包裹", na=False))
         if len(dr) == 2:
-            start_s, end_s = dr[0].strftime("%Y-%m-%d"), dr[1].strftime("%Y-%m-%d")
-            mask &= (df_o['date_str'] >= start_s) & (df_o['date_str'] <= end_s)
-        
+            s_s, e_s = dr[0].strftime("%Y-%m-%d"), dr[1].strftime("%Y-%m-%d")
+            mask &= (df_o['date_str'] >= s_s) & (df_o['date_str'] <= e_s)
         st.dataframe(df_o[mask].sort_values('dt_sort', ascending=False)[['timestamp', 'p_name', 'quantity', 'mode', 'platform']], use_container_width=True, hide_index=True)
 
 with tabs[3]:
@@ -146,4 +152,4 @@ with tabs[3]:
         df_entry = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)]
         st.dataframe(df_entry[['timestamp', 'platform', 'logistics', 'quantity']], use_container_width=True, hide_index=True)
 
-    if st.button("🔄 刷新雲端數據", use_container_width=True): st.cache_data.clear(); st.rerun()
+    if st.button("🔄 刷新數據", use_container_width=True): st.cache_data.clear(); st.rerun()
