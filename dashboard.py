@@ -4,7 +4,7 @@ from supabase import create_client
 from datetime import datetime, date, timedelta
 
 # --- 1. 頁面配置與視覺設計 ---
-st.set_page_config(page_title="培玩雲端 ERP", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="培玩雲端 ERP V0407", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
@@ -13,6 +13,11 @@ st.markdown("""
         background: white; padding: 20px; border-radius: 15px;
         box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-left: 5px solid #E8A0BF;
         text-align: left; margin-bottom: 10px;
+    }
+    .total-card {
+        background: linear-gradient(135deg, #E67E22 0%, #D35400 100%);
+        color: white; padding: 20px; border-radius: 15px;
+        text-align: center; margin-bottom: 20px; font-weight: bold;
     }
     .metric-value { font-size: 1.8rem; font-weight: bold; color: #2C3E50; }
     .metric-label { color: #7F8C8D; font-size: 0.9rem; }
@@ -37,13 +42,12 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據預處理 (鎖定結構，不論欄位名稱) ---
+# --- 3. 數據預處理 (鎖定結構) ---
 def process_orders(df):
     std_cols = ['p_name', 'quantity', 'timestamp', 'platform', 'mode', 'logistics']
     if df is None or df.empty: return pd.DataFrame(columns=std_cols + ['date_str', 'dt_sort'])
     df.columns = [str(c).lower().strip() for c in df.columns]
     
-    # 模糊對齊訂單表
     r_map = {}
     for c in df.columns:
         if any(x in c for x in ['p_name', 'product', '品名', '商品']): r_map[c] = 'p_name'
@@ -60,7 +64,6 @@ def process_orders(df):
     return df
 
 def process_products(df):
-    # 商品表防護：如果模糊對齊失敗，強制使用前三欄
     if df is None or df.empty: return pd.DataFrame(columns=['name', 'stock', 'vendor'])
     df.columns = [str(c).lower().strip() for c in df.columns]
     
@@ -71,15 +74,12 @@ def process_products(df):
         if any(x in c for x in ['vendor', '供應', 'v_name']): r_map[c] = 'vendor'
     df = df.rename(columns=r_map)
     
-    # 最終保險：如果還是缺欄位，直接拿第 0, 1, 2 欄來當補丁
     if 'name' not in df.columns and len(df.columns) > 0: df['name'] = df.iloc[:, 0]
     if 'stock' not in df.columns and len(df.columns) > 1: df['stock'] = df.iloc[:, 1]
     if 'vendor' not in df.columns and len(df.columns) > 2: df['vendor'] = df.iloc[:, 2]
     
-    # 確保這三個欄位一定存在於回傳的 df 中
     for col in ['name', 'stock', 'vendor']:
         if col not in df.columns: df[col] = "-"
-        
     df['stock'] = pd.to_numeric(df['stock'], errors='coerce').fillna(0)
     return df[['name', 'stock', 'vendor']]
 
@@ -141,28 +141,64 @@ with tabs[0]:
         pkg = int(df_ship[df_ship["date_str"]==today_s]["quantity"].sum()) if not df_ship.empty else 0
         st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{pkg} 件</div></div>', unsafe_allow_html=True)
     with m2:
-        st.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單筆數</div><div class="metric-value">{len(df_items)} 筆</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單明細</div><div class="metric-value">{len(df_items)} 筆</div></div>', unsafe_allow_html=True)
     with m3:
         low_stock = len(df_p[df_p['stock'] < 10]) if not df_p.empty else 0
-        st.markdown(f'<div class="metric-card"><div class="metric-label">庫存低於10件</div><div class="metric-value" style="color:red">{low_stock} 項</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">庫存警戒項目</div><div class="metric-value" style="color:red">{low_stock} 項</div></div>', unsafe_allow_html=True)
 
 with tabs[1]:
     st.markdown("### ☁️ 現有庫存清單")
     if not df_p.empty:
-        # 使用剛剛在 process_products 裡確保存在的欄位名
-        view_p = df_p.rename(columns={'name':'商品名稱','stock':'在庫數量','vendor':'供應商'})
-        st.dataframe(view_p, use_container_width=True, hide_index=True)
+        st.dataframe(df_p.rename(columns={'name':'商品名稱','stock':'在庫數量','vendor':'供應商'}), use_container_width=True, hide_index=True)
 
 with tabs[2]:
-    dr = st.date_input("📅 選擇日期範圍", [date(2026, 3, 2), date.today()])
+    st.markdown("### 📦 出貨紀錄明細優化版")
+    with st.container(border=True):
+        c1, c2, c3 = st.columns(3)
+        dr = c1.date_input("📅 日期篩選", [date(2026, 3, 2), date.today()], key="order_dr")
+        plt_list = ["全部"] + sorted(list(df_o['platform'].unique()))
+        sel_plt = c2.selectbox("📱 平台篩選", plt_list)
+        mode_list = ["全部"] + sorted(list(df_o['mode'].unique()))
+        sel_mode = c3.selectbox("🔃 模式篩選", mode_list)
+
     if not df_o.empty and len(dr) == 2:
         mask = (~df_o['p_name'].str.contains("物流|包裹", na=False))
         mask &= (df_o['date_str'] >= dr[0].strftime("%Y-%m-%d")) & (df_o['date_str'] <= dr[1].strftime("%Y-%m-%d"))
-        st.dataframe(df_o[mask].sort_values('dt_sort', ascending=False)[['timestamp', 'p_name', 'quantity', 'mode', 'platform']], use_container_width=True, hide_index=True)
+        if sel_plt != "全部": mask &= (df_o['platform'] == sel_plt)
+        if sel_mode != "全部": mask &= (df_o['mode'] == sel_mode)
+        
+        view_o = df_o[mask].sort_values('dt_sort', ascending=False)[['timestamp', 'p_name', 'quantity', 'mode', 'platform', 'logistics']]
+        st.dataframe(view_o.rename(columns={
+            'timestamp':'時間註記','p_name':'商品名稱','quantity':'數量','mode':'交易模式','platform':'銷售平台','logistics':'物流單號'
+        }), use_container_width=True, hide_index=True)
 
 with tabs[3]:
+    st.markdown("### 🚚 物流件數登記優化版")
     df_entry = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)]
-    if not df_entry.empty:
-        st.dataframe(df_entry.sort_values('dt_sort', ascending=False)[['timestamp', 'platform', 'logistics', 'quantity']], use_container_width=True, hide_index=True)
+    
+    with st.container(border=True):
+        l1, l2 = st.columns(2)
+        ldr = l1.date_input("📅 統計週期", [date(2026, 3, 2), date.today()], key="logi_dr")
+        logi_list = ["全部"] + sorted(list(df_entry['logistics'].unique()))
+        sel_logi = l2.selectbox("🚚 物流商篩選", logi_list)
+
+    if not df_entry.empty and len(ldr) == 2:
+        e_mask = (df_entry['date_str'] >= ldr[0].strftime("%Y-%m-%d")) & (df_entry['date_str'] <= ldr[1].strftime("%Y-%m-%d"))
+        if sel_logi != "全部": e_mask &= (df_entry['logistics'] == sel_logi)
+        
+        df_res = df_entry[e_mask].sort_values('dt_sort', ascending=False)
+        
+        # 週期件數統計卡片
+        total_qty = int(df_res['quantity'].sum())
+        st.markdown(f"""
+            <div class="total-card">
+                <div style="font-size:1rem; opacity:0.8;">週期件數總計 ({ldr[0]} ~ {ldr[1]})</div>
+                <div style="font-size:2.5rem;">{total_qty} <span style="font-size:1rem;">件</span></div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        st.dataframe(df_res[['timestamp', 'platform', 'logistics', 'quantity']].rename(columns={
+            'timestamp':'時間註記','platform':'來源平台','logistics':'物流渠道','quantity':'件數'
+        }), use_container_width=True, hide_index=True)
 
     if st.button("🔄 刷新雲端數據", use_container_width=True): st.cache_data.clear(); st.rerun()
