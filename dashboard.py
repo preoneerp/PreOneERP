@@ -4,7 +4,7 @@ from supabase import create_client
 from datetime import datetime, date, timedelta
 
 # --- 1. 頁面配置與視覺設計 ---
-st.set_page_config(page_title="培玩雲端 ERP WEB V0407.4", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="培玩雲端 ERP WEB V0407.5", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
@@ -44,7 +44,7 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據處理核心 (V0407.4 時間優化邏輯) ---
+# --- 3. 數據處理核心 (V0407.5：強效字串保底邏輯) ---
 def process_orders(df):
     std_cols = ['p_name', 'quantity', 'timestamp', 'platform', 'mode', 'logistics']
     if df is None or df.empty: return pd.DataFrame(columns=std_cols + ['date_str', 'display_time', 'dt_sort'])
@@ -61,12 +61,18 @@ def process_orders(df):
     for m in std_cols:
         if m not in df.columns: df[m] = "-"
     
-    # --- 時間註記優化核心 ---
+    # --- 關鍵修正：字串優先處理 ---
+    # 轉為字串並清理無意義字元 T 和 Z
+    t_str = df['timestamp'].astype(str).str.replace('T', ' ').str.replace('Z', '')
+    
+    # 1. 顯示用時間：取前 16 位 (YYYY-MM-DD HH:MM)
+    df['display_time'] = t_str.str[:16]
+    
+    # 2. 篩選用日期：取前 10 位 (YYYY-MM-DD)
+    df['date_str'] = t_str.str[:10]
+    
+    # 3. 排序用：嘗試轉換，失敗也沒關係
     df['dt_sort'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    # 建立適合一般人閱讀的格式: 2026-03-02 14:30
-    df['display_time'] = df['dt_sort'].dt.strftime('%Y-%m-%d %H:%M').fillna("時間不詳")
-    # 建立純日期字串供篩選
-    df['date_str'] = df['dt_sort'].dt.strftime('%Y-%m-%d').fillna("未知日期")
     
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0)
     return df
@@ -150,7 +156,7 @@ with tabs[0]:
         m1.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{pkg_cnt} 件</div></div>', unsafe_allow_html=True)
         m2.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單明細</div><div class="metric-value">{len(df_items)} 筆</div></div>', unsafe_allow_html=True)
         m3.markdown(f'<div class="metric-card"><div class="metric-label">庫存警戒項目</div><div class="metric-value" style="color:red">{len(df_p[df_p["stock"] < 10]) if not df_p.empty else 0} 項</div></div>', unsafe_allow_html=True)
-        m4.markdown(f'<div class="metric-card"><div class="metric-label">數據更新狀態</div><div class="metric-value" style="font-size:1.1rem; color:#27AE60;">V0407.4 已優化</div></div>', unsafe_allow_html=True)
+        m4.markdown(f'<div class="metric-card"><div class="metric-label">數據更新狀態</div><div class="metric-value" style="font-size:1.1rem; color:#27AE60;">V0407.5 已修復</div></div>', unsafe_allow_html=True)
 
     with col_logi:
         st.markdown("#### 🚚 當日物流統計表")
@@ -169,7 +175,7 @@ with tabs[1]:
         f_p = df_p if sel_v == "全部供應商" else df_p[df_p['vendor'] == sel_v]
         st.dataframe(f_p.rename(columns={'name':'商品名稱','stock':'在庫數量','vendor':'供應商'}), use_container_width=True, hide_index=True)
 
-# --- TAB 2: 出貨紀錄明細 (時間優化顯示) ---
+# --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
     st.markdown("### 📦 出貨紀錄明細")
     with st.container(border=True):
@@ -186,13 +192,12 @@ with tabs[2]:
         if sel_plt != "全部平台": mask &= (df_o['platform'] == sel_plt)
         if sel_mod != "全部模式": mask &= (df_o['mode'] == sel_mod)
         
-        # 顯示欄位改用 display_time
-        view_o = df_o[mask].sort_values('dt_sort', ascending=False)[['display_time', 'p_name', 'quantity', 'mode', 'platform', 'logistics']]
+        view_o = df_o[mask].sort_values(['date_str', 'timestamp'], ascending=False)[['display_time', 'p_name', 'quantity', 'mode', 'platform', 'logistics']]
         st.dataframe(view_o.rename(columns={
             'display_time':'時間註記','p_name':'商品名稱','quantity':'數量','mode':'交易模式','platform':'銷售平台','logistics':'物流單號'
         }), use_container_width=True, hide_index=True)
 
-# --- TAB 3: 物流件數登記 (時間優化顯示) ---
+# --- TAB 3: 物流件數登記 ---
 with tabs[3]:
     st.markdown("### 🚚 物流件數登記")
     df_ent = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)]
@@ -205,10 +210,9 @@ with tabs[3]:
         e_mask = (df_ent['date_str'] >= ldr[0].strftime("%Y-%m-%d")) & (df_ent['date_str'] <= ldr[1].strftime("%Y-%m-%d"))
         if sel_logi != "全部物流": e_mask &= (df_ent['logistics'] == sel_logi)
         
-        df_res = df_ent[e_mask].sort_values('dt_sort', ascending=False)
+        df_res = df_ent[e_mask].sort_values(['date_str', 'timestamp'], ascending=False)
         st.markdown(f'<div class="total-card"><div style="font-size:1.1rem; opacity:0.9;">週期件數總計 ({ldr[0]} ~ {ldr[1]})</div><div style="font-size:2.8rem;">{int(df_res["quantity"].sum())} <span style="font-size:1.1rem;">件</span></div></div>', unsafe_allow_html=True)
         
-        # 顯示欄位改用 display_time
         st.dataframe(df_res[['display_time', 'platform', 'logistics', 'quantity']].rename(columns={
             'display_time':'時間註記','platform':'來源平台','logistics':'物流渠道','quantity':'件數'
         }), use_container_width=True, hide_index=True)
