@@ -4,33 +4,41 @@ from supabase import create_client
 from datetime import datetime, date, timedelta
 
 # --- 1. 頁面配置與視覺設計 ---
-st.set_page_config(page_title="培玩雲端 ERP V0407", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="培玩雲端 ERP WEB V0407.2", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
     .stApp { background-color: #FDFBFA; }
+    /* 指標卡片美化 */
     .metric-card {
-        background: white; padding: 20px; border-radius: 15px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-left: 5px solid #E8A0BF;
-        text-align: left; margin-bottom: 10px;
+        background: white; padding: 22px; border-radius: 18px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.06); border-left: 6px solid #E8A0BF;
+        text-align: left; margin-bottom: 12px;
     }
     .total-card {
         background: linear-gradient(135deg, #E67E22 0%, #D35400 100%);
-        color: white; padding: 20px; border-radius: 15px;
-        text-align: center; margin-bottom: 20px; font-weight: bold;
+        color: white; padding: 25px; border-radius: 18px;
+        text-align: center; margin-bottom: 25px; font-weight: bold;
+        box-shadow: 0 4px 15px rgba(230, 126, 34, 0.3);
     }
-    .metric-value { font-size: 1.8rem; font-weight: bold; color: #2C3E50; }
-    .metric-label { color: #7F8C8D; font-size: 0.9rem; }
+    .metric-value { font-size: 2rem; font-weight: bold; color: #2C3E50; }
+    .metric-label { color: #7F8C8D; font-size: 0.95rem; margin-bottom: 5px; }
+    
+    /* 商品標籤美化 */
     .product-tag {
-        background: #ffffff; border: 1px solid #eee; border-radius: 12px;
-        padding: 15px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        background: white; border: 1px solid #F0F0F0; border-radius: 15px;
+        padding: 18px; text-align: center; box-shadow: 0 2px 10px rgba(0,0,0,0.03);
     }
     .product-name {
-        font-size: 0.95rem; color: #5D6D7E; margin-bottom: 5px; font-weight: 500;
-        height: 2.5rem; display: flex; align-items: center; justify-content: center;
+        font-size: 1rem; color: #5D6D7E; margin-bottom: 8px; font-weight: 500;
+        height: 2.8rem; display: flex; align-items: center; justify-content: center;
     }
-    .product-qty { font-size: 2.2rem; font-weight: 800; color: #E67E22; }
-    .product-unit { font-size: 0.8rem; color: #ABB2B9; margin-left: 3px; }
+    .product-qty { font-size: 2.4rem; font-weight: 800; color: #E67E22; }
+    .product-unit { font-size: 0.9rem; color: #ABB2B9; margin-left: 4px; }
+    
+    /* 表格視覺優化 */
+    div[data-testid="stExpander"] { border: none !important; box-shadow: none !important; }
+    .stDataFrame { border-radius: 12px; overflow: hidden; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -42,7 +50,7 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據預處理 (鎖定結構) ---
+# --- 3. 數據處理核心 (V0407 結構鎖定邏輯) ---
 def process_orders(df):
     std_cols = ['p_name', 'quantity', 'timestamp', 'platform', 'mode', 'logistics']
     if df is None or df.empty: return pd.DataFrame(columns=std_cols + ['date_str', 'dt_sort'])
@@ -91,7 +99,7 @@ if not st.session_state["password_correct"]:
     _, col_mid, _ = st.columns([1.2, 1, 1.2])
     with col_mid:
         st.write("<br><br>", unsafe_allow_html=True)
-        st.markdown("<h2 style='text-align: center; color: #E8A0BF;'>🎀 培玩雲端管理</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center; color: #E8A0BF;'>🎀 培玩雲端管理系統</h2>", unsafe_allow_html=True)
         with st.container(border=True):
             u = st.text_input("帳號"); p = st.text_input("密碼", type="password")
             if st.button("進入系統", use_container_width=True):
@@ -120,10 +128,12 @@ df_o = process_orders(df_o_raw)
 # --- 6. 主介面 ---
 tabs = st.tabs(["📊 數據總覽", "☁️ 庫存狀態", "📦 出貨紀錄明細", "🚚 物流件數登記"])
 
+# --- TAB 0: 數據總覽 ---
 with tabs[0]:
     today_s = date.today().strftime("%Y-%m-%d")
     today_o = df_o[df_o['date_str'] == today_s] if not df_o.empty else pd.DataFrame(columns=df_o.columns)
-    st.markdown(f"### 🎯 今日統計 ({today_s})")
+    
+    st.markdown(f"### 🎯 今日營運概況 ({today_s})")
     
     prods = [{"name": "專注力訓練機", "s": "舒爾特專注力訓練機"},{"name": "24點數感大作戰", "s": "24點數感邏輯大作戰"},{"name": "顯微鏡相機", "s": "顯微鏡相機"},{"name": "創意卷軸畫", "s": "滾動創意卷軸畫"},{"name": "攜行盒-藍", "s": "攜行盒-藍"},{"name": "攜行盒-粉", "s": "攜行盒-粉"}]
     p_cols = st.columns(6)
@@ -136,64 +146,88 @@ with tabs[0]:
     
     st.write("<br>", unsafe_allow_html=True)
     df_ship = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)]
-    m1, m2, m3 = st.columns(3)
-    with m1:
+    
+    col_m, col_logi = st.columns([1, 1.2])
+    
+    with col_m:
+        st.markdown("#### 📈 今日核心指標")
+        m1, m2 = st.columns(2)
         pkg = int(df_ship[df_ship["date_str"]==today_s]["quantity"].sum()) if not df_ship.empty else 0
-        st.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{pkg} 件</div></div>', unsafe_allow_html=True)
-    with m2:
-        st.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單明細</div><div class="metric-value">{len(df_items)} 筆</div></div>', unsafe_allow_html=True)
-    with m3:
+        m1.markdown(f'<div class="metric-card"><div class="metric-label">今日出貨包裹</div><div class="metric-value">{pkg} 件</div></div>', unsafe_allow_html=True)
+        m2.markdown(f'<div class="metric-card"><div class="metric-label">今日訂單明細</div><div class="metric-value">{len(df_items)} 筆</div></div>', unsafe_allow_html=True)
+        
+        m3, m4 = st.columns(2)
         low_stock = len(df_p[df_p['stock'] < 10]) if not df_p.empty else 0
-        st.markdown(f'<div class="metric-card"><div class="metric-label">庫存警戒項目</div><div class="metric-value" style="color:red">{low_stock} 項</div></div>', unsafe_allow_html=True)
+        m3.markdown(f'<div class="metric-card"><div class="metric-label">庫存警戒項目</div><div class="metric-value" style="color:red">{low_stock} 項</div></div>', unsafe_allow_html=True)
+        m4.markdown(f'<div class="metric-card"><div class="metric-label">數據更新狀態</div><div class="metric-value" style="font-size:1.2rem; color:#27AE60;">已同步</div></div>', unsafe_allow_html=True)
 
+    with col_logi:
+        st.markdown("#### 🚚 當日物流統計表")
+        today_ship = df_ship[df_ship['date_str'] == today_s] if not df_ship.empty else pd.DataFrame()
+        if not today_ship.empty:
+            logi_summary = today_ship.groupby('logistics')['quantity'].sum().reset_index()
+            logi_summary.columns = ['物流商/渠道', '件數']
+            st.dataframe(logi_summary.sort_values('件數', ascending=False), use_container_width=True, hide_index=True)
+        else:
+            st.info("今日尚無物流登記數據")
+
+# --- TAB 1: 庫存狀態 ---
 with tabs[1]:
     st.markdown("### ☁️ 現有庫存清單")
     if not df_p.empty:
-        st.dataframe(df_p.rename(columns={'name':'商品名稱','stock':'在庫數量','vendor':'供應商'}), use_container_width=True, hide_index=True)
+        with st.container(border=True):
+            v_list = ["全部供應商"] + sorted(list(df_p['vendor'].unique()))
+            sel_v = st.selectbox("🔍 依供應商快速篩選", v_list)
+        
+        f_df_p = df_p if sel_v == "全部供應商" else df_p[df_p['vendor'] == sel_v]
+        
+        view_p = f_df_p.rename(columns={'name':'商品名稱','stock':'在庫數量','vendor':'供應商'})
+        st.dataframe(view_p, use_container_width=True, hide_index=True)
 
+# --- TAB 2: 出貨紀錄明細 ---
 with tabs[2]:
-    st.markdown("### 📦 出貨紀錄明細優化版")
+    st.markdown("### 📦 出貨紀錄明細")
     with st.container(border=True):
         c1, c2, c3 = st.columns(3)
-        dr = c1.date_input("📅 日期篩選", [date(2026, 3, 2), date.today()], key="order_dr")
-        plt_list = ["全部"] + sorted(list(df_o['platform'].unique()))
-        sel_plt = c2.selectbox("📱 平台篩選", plt_list)
-        mode_list = ["全部"] + sorted(list(df_o['mode'].unique()))
-        sel_mode = c3.selectbox("🔃 模式篩選", mode_list)
+        dr = c1.date_input("📅 日期範圍", [date(2026, 3, 2), date.today()], key="order_dr")
+        plt_list = ["全部平台"] + sorted(list(df_o['platform'].unique()))
+        sel_plt = c2.selectbox("📱 銷售平台", plt_list)
+        mode_list = ["全部模式"] + sorted(list(df_o['mode'].unique()))
+        sel_mode = c3.selectbox("🔃 交易模式", mode_list)
 
     if not df_o.empty and len(dr) == 2:
         mask = (~df_o['p_name'].str.contains("物流|包裹", na=False))
         mask &= (df_o['date_str'] >= dr[0].strftime("%Y-%m-%d")) & (df_o['date_str'] <= dr[1].strftime("%Y-%m-%d"))
-        if sel_plt != "全部": mask &= (df_o['platform'] == sel_plt)
-        if sel_mode != "全部": mask &= (df_o['mode'] == sel_mode)
+        if sel_plt != "全部平台": mask &= (df_o['platform'] == sel_plt)
+        if sel_mode != "全部模式": mask &= (df_o['mode'] == sel_mode)
         
         view_o = df_o[mask].sort_values('dt_sort', ascending=False)[['timestamp', 'p_name', 'quantity', 'mode', 'platform', 'logistics']]
         st.dataframe(view_o.rename(columns={
             'timestamp':'時間註記','p_name':'商品名稱','quantity':'數量','mode':'交易模式','platform':'銷售平台','logistics':'物流單號'
         }), use_container_width=True, hide_index=True)
 
+# --- TAB 3: 物流件數登記 ---
 with tabs[3]:
-    st.markdown("### 🚚 物流件數登記優化版")
+    st.markdown("### 🚚 物流件數登記")
     df_entry = df_o[df_o['p_name'].str.contains("物流|包裹", na=False)]
     
     with st.container(border=True):
         l1, l2 = st.columns(2)
         ldr = l1.date_input("📅 統計週期", [date(2026, 3, 2), date.today()], key="logi_dr")
-        logi_list = ["全部"] + sorted(list(df_entry['logistics'].unique()))
-        sel_logi = l2.selectbox("🚚 物流商篩選", logi_list)
+        logi_filter = ["全部物流"] + sorted(list(df_entry['logistics'].unique()))
+        sel_logi = l2.selectbox("🚚 物流商/渠道", logi_filter)
 
     if not df_entry.empty and len(ldr) == 2:
         e_mask = (df_entry['date_str'] >= ldr[0].strftime("%Y-%m-%d")) & (df_entry['date_str'] <= ldr[1].strftime("%Y-%m-%d"))
-        if sel_logi != "全部": e_mask &= (df_entry['logistics'] == sel_logi)
+        if sel_logi != "全部物流": e_mask &= (df_entry['logistics'] == sel_logi)
         
         df_res = df_entry[e_mask].sort_values('dt_sort', ascending=False)
-        
-        # 週期件數統計卡片
         total_qty = int(df_res['quantity'].sum())
+        
         st.markdown(f"""
             <div class="total-card">
-                <div style="font-size:1rem; opacity:0.8;">週期件數總計 ({ldr[0]} ~ {ldr[1]})</div>
-                <div style="font-size:2.5rem;">{total_qty} <span style="font-size:1rem;">件</span></div>
+                <div style="font-size:1.1rem; opacity:0.9;">週期件數總計 ({ldr[0]} ~ {ldr[1]})</div>
+                <div style="font-size:2.8rem;">{total_qty} <span style="font-size:1.1rem;">件</span></div>
             </div>
         """, unsafe_allow_html=True)
         
