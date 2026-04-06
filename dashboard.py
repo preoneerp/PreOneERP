@@ -37,13 +37,13 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 3. 數據預處理 ---
+# --- 3. 數據預處理 (鎖定結構，不論欄位名稱) ---
 def process_orders(df):
     std_cols = ['p_name', 'quantity', 'timestamp', 'platform', 'mode', 'logistics']
     if df is None or df.empty: return pd.DataFrame(columns=std_cols + ['date_str', 'dt_sort'])
     df.columns = [str(c).lower().strip() for c in df.columns]
     
-    # 模糊對齊
+    # 模糊對齊訂單表
     r_map = {}
     for c in df.columns:
         if any(x in c for x in ['p_name', 'product', '品名', '商品']): r_map[c] = 'p_name'
@@ -60,21 +60,28 @@ def process_orders(df):
     return df
 
 def process_products(df):
-    # 商品表專用結構
+    # 商品表防護：如果模糊對齊失敗，強制使用前三欄
     if df is None or df.empty: return pd.DataFrame(columns=['name', 'stock', 'vendor'])
     df.columns = [str(c).lower().strip() for c in df.columns]
     
-    # 對齊商品欄位
     r_map = {}
     for c in df.columns:
         if any(x in c for x in ['name', 'product', '品名']): r_map[c] = 'name'
-        if any(x in c for x in ['stock', '庫存', '在庫']): r_map[c] = 'stock'
-        if any(x in c for x in ['vendor', '供應']): r_map[c] = 'vendor'
+        if any(x in c for x in ['stock', '庫存', '在庫', 'qty']): r_map[c] = 'stock'
+        if any(x in c for x in ['vendor', '供應', 'v_name']): r_map[c] = 'vendor'
     df = df.rename(columns=r_map)
     
-    if 'stock' in df.columns:
-        df['stock'] = pd.to_numeric(df['stock'], errors='coerce').fillna(0)
-    return df
+    # 最終保險：如果還是缺欄位，直接拿第 0, 1, 2 欄來當補丁
+    if 'name' not in df.columns and len(df.columns) > 0: df['name'] = df.iloc[:, 0]
+    if 'stock' not in df.columns and len(df.columns) > 1: df['stock'] = df.iloc[:, 1]
+    if 'vendor' not in df.columns and len(df.columns) > 2: df['vendor'] = df.iloc[:, 2]
+    
+    # 確保這三個欄位一定存在於回傳的 df 中
+    for col in ['name', 'stock', 'vendor']:
+        if col not in df.columns: df[col] = "-"
+        
+    df['stock'] = pd.to_numeric(df['stock'], errors='coerce').fillna(0)
+    return df[['name', 'stock', 'vendor']]
 
 # --- 4. 登入系統 ---
 if "password_correct" not in st.session_state:
@@ -142,9 +149,8 @@ with tabs[0]:
 with tabs[1]:
     st.markdown("### ☁️ 現有庫存清單")
     if not df_p.empty:
-        # 強制呈現核心三欄位
-        view_p = df_p[['name', 'stock', 'vendor']].copy()
-        view_p.columns = ['商品名稱', '在庫數量', '供應商']
+        # 使用剛剛在 process_products 裡確保存在的欄位名
+        view_p = df_p.rename(columns={'name':'商品名稱','stock':'在庫數量','vendor':'供應商'})
         st.dataframe(view_p, use_container_width=True, hide_index=True)
 
 with tabs[2]:
