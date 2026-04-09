@@ -4,7 +4,7 @@ from supabase import create_client
 from datetime import datetime, date, timedelta
 
 # --- 1. 頁面配置與視覺設計 (維持 V0407.4 原版) ---
-st.set_page_config(page_title="培玩雲端 ERP WEB V0407.13", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="培玩雲端 ERP WEB V0407.14", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
@@ -136,7 +136,7 @@ with tabs[0]:
             st.dataframe(logi_sum.rename(columns={l_col:'渠道','quantity':'件數'}), use_container_width=True, hide_index=True)
         else: st.info("今日尚無物流登記數據")
 
-# --- TAB 1: 庫存狀態 (獨立邏輯) ---
+# --- TAB 1: 庫存狀態 (獨立邏輯 + 新增下載按鈕) ---
 with tabs[1]:
     st.markdown("### ☁️ 現有庫存清單")
     df_p_tab1 = df_p_raw.copy()
@@ -153,9 +153,26 @@ with tabs[1]:
     if 'stock' not in df_p_tab1.columns: df_p_tab1['stock'] = df_p_tab1.iloc[:, 1]
     if 'vendor' not in df_p_tab1.columns: df_p_tab1['vendor'] = df_p_tab1.iloc[:, 2]
 
-    sel_v = st.selectbox("🔍 依供應商篩選", ["全部供應商"] + sorted(list(df_p_tab1['vendor'].unique())))
+    col_v, col_dl = st.columns([3, 1])
+    with col_v:
+        sel_v = st.selectbox("🔍 依供應商篩選", ["全部供應商"] + sorted(list(df_p_tab1['vendor'].unique())))
+    
     f_p = df_p_tab1 if sel_v == "全部供應商" else df_p_tab1[df_p_tab1['vendor'] == sel_v]
-    st.dataframe(f_p[['name', 'stock', 'vendor']].rename(columns={'name':'商品名稱','stock':'在庫數量','vendor':'供應商'}), use_container_width=True, hide_index=True)
+    view_p = f_p[['name', 'stock', 'vendor']].rename(columns={'name':'商品名稱','stock':'在庫數量','vendor':'供應商'})
+    
+    # 新增下載按鈕
+    with col_dl:
+        st.write("<br>", unsafe_allow_html=True)
+        csv = view_p.to_csv(index=False).encode('utf-8-sig') # 使用 utf-8-sig 確保 Excel 開啟不亂碼
+        st.download_button(
+            label="📥 下載庫存清單 (CSV)",
+            data=csv,
+            file_name=f'在庫清單_{datetime.now().strftime("%Y%m%d")}.csv',
+            mime='text/csv',
+            use_container_width=True
+        )
+
+    st.dataframe(view_p, use_container_width=True, hide_index=True)
 
 # --- TAB 2: 出貨紀錄明細 (獨立篩選 + 字串降噪) ---
 with tabs[2]:
